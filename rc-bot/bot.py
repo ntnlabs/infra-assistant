@@ -206,7 +206,8 @@ class RocketChatBot:
         }
 
     def call_dify(self, text: str, room_id: str, user: str) -> str:
-        """Send message to Dify and get response."""
+        """Send message to Dify and get response (streaming mode for Agent apps)."""
+        import json as json_lib
         conversation_id = self.get_conversation_id(room_id)
 
         try:
@@ -219,11 +220,12 @@ class RocketChatBot:
                 json={
                     "inputs": {},
                     "query": text,
-                    "response_mode": "blocking",
+                    "response_mode": "streaming",
                     "conversation_id": conversation_id,
                     "user": user
                 },
-                timeout=120
+                timeout=120,
+                stream=True
             )
 
             if response.status_code == 401:
@@ -235,13 +237,29 @@ class RocketChatBot:
                 return "Error: Dify app not found."
 
             response.raise_for_status()
-            data = response.json()
 
-            # Update conversation tracking
-            if "conversation_id" in data:
-                self.update_conversation(room_id, data["conversation_id"])
+            # Parse streaming response (Server-Sent Events format)
+            full_answer = ""
+            for line in response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+                    if line.startswith('data: '):
+                        try:
+                            data = json_lib.loads(line[6:])
+                            event = data.get('event', '')
 
-            return data.get("answer", "No response from assistant.")
+                            # Collect answer chunks
+                            if event == 'agent_message' or event == 'message':
+                                full_answer += data.get('answer', '')
+
+                            # Update conversation ID
+                            if 'conversation_id' in data:
+                                self.update_conversation(room_id, data['conversation_id'])
+
+                        except json_lib.JSONDecodeError:
+                            pass
+
+            return full_answer or "No response from assistant."
 
         except requests.exceptions.Timeout:
             logger.error("Dify request timed out")
