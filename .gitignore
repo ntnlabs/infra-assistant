@@ -1,0 +1,73 @@
+# ===================
+# SECRETS - Never commit!
+# ===================
+.env
+*.pem
+*.key
+keys/*
+!keys/.gitkeep
+secrets/
+
+# Host configuration (contains internal IPs/hostnames)
+ssh-proxy/hosts.yaml
+
+# ===================
+# Python
+# ===================
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.egg-info/
+.eggs/
+
+# ===================
+# Dify (managed separately, too large for repo)
+# ===================
+dify/
+
+# ===================
+# Logs
+# ===================
+*.log
+logs/*
+!logs/.gitkeep
+
+# ===================
+# OS Files
+# ===================
+.DS_Store
+Thumbs.db
+*~
+
+# ===================
+# IDE
+# ===================
+.idea/
+.vscode/
+*.swp
+*.swo
+.project
+.settings/
+
+# ===================
+# Docker (local volumes)
+# ===================
+volumes/
+data/
+
+# ===================
+# Temporary
+# ===================
+tmp/
+temp/
+*.tmp
+*.bak
+
+# ===================
+# Build artifacts
+# ===================
+*.tar.gz
+dist/
+build/

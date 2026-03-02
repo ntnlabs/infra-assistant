@@ -1,0 +1,111 @@
+# SSH Proxy Allowed Commands
+# ==========================
+# This file defines which commands can be executed.
+# These are regex patterns - be careful with escaping!
+#
+# This file can be in the repo (no secrets here).
+
+commands:
+  # === System Info (safe, read-only) ===
+  - pattern: "^uname -a$"
+    description: "Show system info"
+
+  - pattern: "^uptime$"
+    description: "Show system uptime"
+
+  - pattern: "^hostname$"
+    description: "Show hostname"
+
+  - pattern: "^df -h$"
+    description: "Check disk space"
+
+  - pattern: "^free -m$"
+    description: "Check memory usage"
+
+  - pattern: "^cat /proc/loadavg$"
+    description: "Check load average"
+
+  # === Process Info ===
+  - pattern: "^ps aux --sort=-%cpu \\| head -[0-9]+$"
+    description: "Top processes by CPU"
+
+  - pattern: "^ps aux --sort=-%mem \\| head -[0-9]+$"
+    description: "Top processes by memory"
+
+  - pattern: "^pgrep -a [a-zA-Z0-9_-]+$"
+    description: "Find process by name"
+
+  # === Service Status (read-only) ===
+  - pattern: "^systemctl status [a-zA-Z0-9_@-]+$"
+    description: "Check service status"
+
+  - pattern: "^systemctl is-active [a-zA-Z0-9_@-]+$"
+    description: "Check if service is active"
+
+  - pattern: "^systemctl list-units --failed$"
+    description: "List failed services"
+
+  # === Logs (limited) ===
+  - pattern: "^journalctl -u [a-zA-Z0-9_@-]+ -n [0-9]+ --no-pager$"
+    description: "View last N lines of service logs"
+
+  - pattern: "^journalctl -p err -n [0-9]+ --no-pager$"
+    description: "View last N error messages"
+
+  - pattern: "^tail -n [0-9]+ /var/log/(syslog|messages|auth\\.log)$"
+    description: "View last N lines of system logs"
+
+  # === Network Diagnostics ===
+  - pattern: "^ping -c [1-5] [a-zA-Z0-9._-]+$"
+    description: "Ping test (1-5 packets)"
+
+  - pattern: "^dig [a-zA-Z0-9._-]+( @[a-zA-Z0-9._-]+)?$"
+    description: "DNS lookup"
+
+  - pattern: "^nslookup [a-zA-Z0-9._-]+$"
+    description: "DNS lookup (nslookup)"
+
+  - pattern: "^ss -tlnp$"
+    description: "List listening TCP ports"
+
+  - pattern: "^ss -ulnp$"
+    description: "List listening UDP ports"
+
+  - pattern: "^ip addr show$"
+    description: "Show IP addresses"
+
+  - pattern: "^ip route show$"
+    description: "Show routing table"
+
+  - pattern: "^netstat -rn$"
+    description: "Show routing table (netstat)"
+
+  - pattern: "^traceroute -n [a-zA-Z0-9._-]+$"
+    description: "Traceroute"
+
+  - pattern: "^curl -sI https?://[a-zA-Z0-9._/-]+$"
+    description: "HTTP HEAD request"
+
+  # === Docker (if applicable) ===
+  - pattern: "^docker ps$"
+    description: "List running containers"
+
+  - pattern: "^docker ps -a$"
+    description: "List all containers"
+
+  - pattern: "^docker logs --tail [0-9]+ [a-zA-Z0-9_-]+$"
+    description: "View container logs"
+
+  # ============================================
+  # SERVICE RESTARTS - Commented out by default
+  # Uncomment when you trust the system
+  # ============================================
+  #
+  # - pattern: "^systemctl restart (nginx|apache2|httpd)$"
+  #   description: "Restart web server"
+  #
+  # - pattern: "^systemctl restart (mysql|mariadb|postgresql)$"
+  #   description: "Restart database"
+  #
+  # - pattern: "^docker restart [a-zA-Z0-9_-]+$"
+  #   description: "Restart Docker container"
