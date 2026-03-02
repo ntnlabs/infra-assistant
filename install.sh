@@ -196,25 +196,28 @@ log_step "Creating directory structure..."
 
 mkdir -p "${INSTALL_DIR}"/{ssh-proxy,rc-bot,tools,keys,logs}
 
-# Copy files from repo
-if [ -d "${SCRIPT_DIR}/ssh-proxy" ]; then
-    cp -r "${SCRIPT_DIR}/ssh-proxy/"* "${INSTALL_DIR}/ssh-proxy/" 2>/dev/null || true
-    log_ok "SSH Proxy files copied"
-fi
+# Copy files from repo (only if source != destination)
+if [ "${SCRIPT_DIR}" != "${INSTALL_DIR}" ]; then
+    if [ -d "${SCRIPT_DIR}/ssh-proxy" ]; then
+        cp -r "${SCRIPT_DIR}/ssh-proxy/"* "${INSTALL_DIR}/ssh-proxy/" 2>/dev/null || true
+        log_ok "SSH Proxy files copied"
+    fi
 
-if [ -d "${SCRIPT_DIR}/rc-bot" ]; then
-    cp -r "${SCRIPT_DIR}/rc-bot/"* "${INSTALL_DIR}/rc-bot/" 2>/dev/null || true
-    log_ok "RC Bot files copied"
-fi
+    if [ -d "${SCRIPT_DIR}/rc-bot" ]; then
+        cp -r "${SCRIPT_DIR}/rc-bot/"* "${INSTALL_DIR}/rc-bot/" 2>/dev/null || true
+        log_ok "RC Bot files copied"
+    fi
 
-if [ -d "${SCRIPT_DIR}/tools" ]; then
-    cp -r "${SCRIPT_DIR}/tools/"* "${INSTALL_DIR}/tools/" 2>/dev/null || true
-fi
+    if [ -d "${SCRIPT_DIR}/tools" ]; then
+        cp -r "${SCRIPT_DIR}/tools/"* "${INSTALL_DIR}/tools/" 2>/dev/null || true
+    fi
 
-# Copy .env.example
-if [ -f "${SCRIPT_DIR}/.env.example" ]; then
-    cp "${SCRIPT_DIR}/.env.example" "${INSTALL_DIR}/.env.example"
-    log_ok ".env.example copied"
+    if [ -f "${SCRIPT_DIR}/.env.example" ]; then
+        cp "${SCRIPT_DIR}/.env.example" "${INSTALL_DIR}/.env.example"
+        log_ok ".env.example copied"
+    fi
+else
+    log_info "Running from install directory, skipping copy step"
 fi
 
 # Create .env from example if doesn't exist
@@ -231,10 +234,9 @@ if [ ! -f "${INSTALL_DIR}/.env" ]; then
     fi
 fi
 
-# Copy hosts.yaml.example
-if [ -f "${SCRIPT_DIR}/ssh-proxy/hosts.yaml.example" ]; then
-    cp "${SCRIPT_DIR}/ssh-proxy/hosts.yaml.example" "${INSTALL_DIR}/ssh-proxy/"
-    if [ ! -f "${INSTALL_DIR}/ssh-proxy/hosts.yaml" ]; then
+# Create hosts.yaml from example if doesn't exist
+if [ ! -f "${INSTALL_DIR}/ssh-proxy/hosts.yaml" ]; then
+    if [ -f "${INSTALL_DIR}/ssh-proxy/hosts.yaml.example" ]; then
         cp "${INSTALL_DIR}/ssh-proxy/hosts.yaml.example" "${INSTALL_DIR}/ssh-proxy/hosts.yaml"
         log_ok "Created hosts.yaml from example"
     fi
