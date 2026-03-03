@@ -9,9 +9,10 @@ Service files for running components as systemd services.
    sed -i "s/YOUR_USER/$USER/g" *.service
    ```
 
-2. Copy to systemd directory:
+2. Symlink to systemd directory (better - updates automatically):
    ```bash
-   sudo cp *.service /etc/systemd/system/
+   sudo ln -s /opt/infra-assistant/systemd/zabbix-proxy.service /etc/systemd/system/
+   sudo ln -s /opt/infra-assistant/systemd/rc-bot.service /etc/systemd/system/
    ```
 
 3. Reload systemd:
