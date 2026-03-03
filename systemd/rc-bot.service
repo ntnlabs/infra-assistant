@@ -1,0 +1,19 @@
+[Unit]
+Description=Rocket.Chat Dify Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+Group=YOUR_USER
+WorkingDirectory=/opt/infra-assistant/rc-bot
+EnvironmentFile=/opt/infra-assistant/.env
+ExecStart=/opt/infra-assistant/rc-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/infra-assistant/logs/rc-bot.log
+StandardError=append:/opt/infra-assistant/logs/rc-bot.log
+
+[Install]
+WantedBy=multi-user.target

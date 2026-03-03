@@ -1,0 +1,19 @@
+[Unit]
+Description=Zabbix Proxy Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+Group=YOUR_USER
+WorkingDirectory=/opt/infra-assistant/zabbix-proxy
+EnvironmentFile=/opt/infra-assistant/.env
+ExecStart=/opt/infra-assistant/zabbix-proxy/venv/bin/python app.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/infra-assistant/logs/zabbix-proxy.log
+StandardError=append:/opt/infra-assistant/logs/zabbix-proxy.log
+
+[Install]
+WantedBy=multi-user.target
