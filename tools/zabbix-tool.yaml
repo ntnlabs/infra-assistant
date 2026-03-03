@@ -1,0 +1,95 @@
+# Zabbix Tool for Dify
+# ====================
+# Import this in Dify: Studio → Your Agent → Tools → Custom Tool → Create
+# Replace YOUR_SERVER_IP with your actual server IP
+# Add Authorization header: Bearer YOUR_ZABBIX_PROXY_TOKEN
+
+openapi: 3.0.0
+info:
+  title: Zabbix API
+  version: 1.0.0
+  description: REST API for Zabbix monitoring data
+servers:
+  - url: http://YOUR_SERVER_IP:5002
+    description: Zabbix Proxy Server
+paths:
+  /summary:
+    get:
+      operationId: getZabbixSummary
+      summary: Get Zabbix status summary with problem counts by severity
+      description: Returns total problems count and breakdown by severity level
+      responses:
+        '200':
+          description: Summary of current Zabbix status
+  /problems:
+    get:
+      operationId: getZabbixProblems
+      summary: Get active Zabbix problems/alerts
+      description: Returns list of current active problems with host and severity info
+      parameters:
+        - name: severity
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 5
+          description: Minimum severity filter (0=not classified, 1=info, 2=warning, 3=average, 4=high, 5=disaster)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+          description: Maximum number of results
+      responses:
+        '200':
+          description: List of active problems
+  /hosts:
+    get:
+      operationId: getZabbixHosts
+      summary: Get monitored hosts
+      description: Returns list of all monitored hosts with status and IP info
+      parameters:
+        - name: group
+          in: query
+          schema:
+            type: string
+          description: Filter by host group name
+      responses:
+        '200':
+          description: List of hosts
+  /host/{hostname}/problems:
+    get:
+      operationId: getHostProblems
+      summary: Get problems for a specific host
+      description: Returns all active problems for the specified host
+      parameters:
+        - name: hostname
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Host name or display name to search for
+      responses:
+        '200':
+          description: Problems for the host
+  /triggers:
+    get:
+      operationId: getZabbixTriggers
+      summary: Get triggers
+      description: Returns list of triggers, optionally filtered to only those in problem state
+      parameters:
+        - name: problems_only
+          in: query
+          schema:
+            type: boolean
+            default: true
+          description: Only show triggers currently in problem state
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+          description: Maximum number of results
+      responses:
+        '200':
+          description: List of triggers
