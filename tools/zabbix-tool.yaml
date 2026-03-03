@@ -6,26 +6,26 @@
 
 openapi: 3.0.0
 info:
-  title: Zabbix API
+  title: Infrastructure Monitoring API
   version: 1.0.0
-  description: REST API for Zabbix monitoring data
+  description: Check active alerts and infrastructure status
 servers:
   - url: http://YOUR_SERVER_IP:5002
-    description: Zabbix Proxy Server
+    description: Monitoring Proxy
 paths:
   /summary:
     get:
-      operationId: getZabbixSummary
-      summary: Get Zabbix status summary with problem counts by severity
-      description: Returns total problems count and breakdown by severity level
+      operationId: getInfrastructureSummary
+      summary: Get infrastructure monitoring summary with alert counts
+      description: Returns total active alerts and breakdown by severity level
       responses:
         '200':
-          description: Summary of current Zabbix status
+          description: Summary of current infrastructure status
   /problems:
     get:
-      operationId: getZabbixProblems
-      summary: Get active Zabbix problems/alerts
-      description: Returns list of current active problems with host and severity info
+      operationId: getActiveAlerts
+      summary: Get currently active alerts and problems
+      description: Returns list of current active alerts with host and severity info
       parameters:
         - name: severity
           in: query
@@ -45,8 +45,8 @@ paths:
           description: List of active problems
   /hosts:
     get:
-      operationId: getZabbixHosts
-      summary: Get monitored hosts
+      operationId: listMonitoredHosts
+      summary: List all monitored infrastructure hosts
       description: Returns list of all monitored hosts with status and IP info
       parameters:
         - name: group
@@ -59,9 +59,9 @@ paths:
           description: List of hosts
   /host/{hostname}/problems:
     get:
-      operationId: getHostProblems
-      summary: Get problems for a specific host
-      description: Returns all active problems for the specified host
+      operationId: checkHostAlerts
+      summary: Check alerts for a specific host
+      description: Returns all active alerts for the specified host
       parameters:
         - name: hostname
           in: path
@@ -74,8 +74,8 @@ paths:
           description: Problems for the host
   /triggers:
     get:
-      operationId: getZabbixTriggers
-      summary: Get triggers
+      operationId: listActiveTriggers
+      summary: List active monitoring triggers
       description: Returns list of triggers, optionally filtered to only those in problem state
       parameters:
         - name: problems_only
