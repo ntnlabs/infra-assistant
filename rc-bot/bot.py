@@ -55,6 +55,11 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 ZABBIX_PROXY_URL = os.environ.get("ZABBIX_PROXY_URL", "http://localhost:5002")
 ZABBIX_PROXY_TOKEN = os.environ.get("ZABBIX_PROXY_TOKEN", "")
 
+# SSH (for command execution)
+SSH_ALLOWED_HOSTS = [h.strip() for h in os.environ.get("SSH_ALLOWED_HOSTS", "").split(",") if h.strip()]
+SSH_USER = os.environ.get("SSH_USER", "monitor")
+SSH_KEY_PATH = os.environ.get("SSH_KEY_PATH", "")
+
 # Settings
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "2"))
 CONVERSATION_TIMEOUT = int(os.environ.get("CONVERSATION_TIMEOUT", "3600"))
@@ -113,6 +118,12 @@ You have access to these tools - use them proactively when relevant:
    - Requires: Event ID (from get_active_alerts)
    - Actions: acknowledge (mark as seen) or close (resolve the alert)
    - Can add optional message/comment explaining the action taken
+
+4. **run_command** - Execute diagnostic commands on remote hosts via SSH
+   - Use when: Users ask to check disk space, memory, CPU, uptime on specific servers
+   - Available commands: df/disk (disk space), memory/free/ram, uptime, load, cpu, processes, network, listening
+   - Requires: Hostname from allowed list
+   - Returns: Command output from the remote host
 
 ## Communication Guidelines
 
@@ -278,6 +289,87 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "") 
         return {"success": False, "error": str(e)}
 
 
+def run_command(host: str, command: str) -> dict:
+    """Run allowed command on remote host via SSH.
+
+    Args:
+        host: Hostname or IP (must be in SSH_ALLOWED_HOSTS)
+        command: Command shorthand (df, memory, uptime, load, etc.)
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    import subprocess
+
+    # Allowlist of safe commands
+    ALLOWED_COMMANDS = {
+        "df": "df -h",
+        "disk": "df -h",
+        "disk_space": "df -h",
+        "memory": "free -h",
+        "free": "free -h",
+        "ram": "free -h",
+        "uptime": "uptime",
+        "load": "cat /proc/loadavg",
+        "cpu": "top -bn1 | head -20",
+        "processes": "ps aux --sort=-%mem | head -15",
+        "network": "ip addr show",
+        "listening": "ss -tlnp",
+    }
+
+    # Check command is allowed
+    if command.lower() not in ALLOWED_COMMANDS:
+        available = ", ".join(sorted(ALLOWED_COMMANDS.keys()))
+        return {"success": False, "error": f"Command '{command}' not allowed. Available: {available}"}
+
+    # Check host is allowed
+    if not SSH_ALLOWED_HOSTS:
+        return {"success": False, "error": "No SSH hosts configured (SSH_ALLOWED_HOSTS in .env)"}
+
+    if host not in SSH_ALLOWED_HOSTS:
+        return {"success": False, "error": f"Host '{host}' not allowed. Allowed hosts: {', '.join(SSH_ALLOWED_HOSTS)}"}
+
+    try:
+        # Build SSH command
+        actual_command = ALLOWED_COMMANDS[command.lower()]
+        ssh_cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=10",
+            "-o", "BatchMode=yes",  # Don't prompt for password
+        ]
+
+        # Add key if specified
+        if SSH_KEY_PATH:
+            ssh_cmd.extend(["-i", SSH_KEY_PATH])
+
+        ssh_cmd.append(f"{SSH_USER}@{host}")
+        ssh_cmd.append(actual_command)
+
+        logger.info(f"Executing SSH command on {host}: {actual_command}")
+
+        # Execute with timeout
+        result = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            return {"success": True, "data": f"Output from {host}:\n```\n{output}\n```"}
+        else:
+            error = result.stderr.strip() or "Command failed"
+            return {"success": False, "error": f"SSH error on {host}: {error}"}
+
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": f"Command timed out on {host}"}
+    except Exception as e:
+        logger.error(f"Error running SSH command: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # Tool definitions for LLM
 TOOLS = [
     {
@@ -321,6 +413,22 @@ TOOLS = [
                 "default": ""
             }
         }
+    },
+    {
+        "name": "run_command",
+        "description": "Run diagnostic command on remote host via SSH. Use when users ask to check disk, memory, uptime, or run commands on servers.",
+        "parameters": {
+            "host": {
+                "type": "string",
+                "description": "Hostname or IP address (must be in allowed list)",
+                "required": True
+            },
+            "command": {
+                "type": "string",
+                "description": "Command to run: df, disk, memory, uptime, load, cpu, processes, network, listening",
+                "required": True
+            }
+        }
     }
 ]
 
@@ -328,7 +436,8 @@ TOOLS = [
 TOOL_FUNCTIONS = {
     "get_active_alerts": get_active_alerts,
     "get_infrastructure_summary": get_infrastructure_summary,
-    "manage_alert": manage_alert
+    "manage_alert": manage_alert,
+    "run_command": run_command
 }
 
 
@@ -582,6 +691,45 @@ class RocketChatBot:
                                 messages.append({"role": "assistant", "content": f"I'll {action} event {event_id}."})
                                 messages.append({"role": "user", "content": f"Result:\n{tool_result['data']}\n\nPlease confirm to the user."})
                                 tool_called = True
+
+                # Check for SSH command execution
+                if any(word in text.lower() for word in ["check disk", "disk space", "check memory", "uptime on", "run", "execute", "df", "free -"]):
+                    if not tool_called and iteration == 1:
+                        # Try to extract host and command
+                        import re
+                        # Look for "on hostname" pattern
+                        host_match = re.search(r'on\s+([a-zA-Z0-9\-_.]+)', text, re.IGNORECASE)
+
+                        if host_match:
+                            host = host_match.group(1)
+
+                            # Determine command from keywords
+                            command = None
+                            if any(word in text.lower() for word in ["disk", "df", "space"]):
+                                command = "df"
+                            elif any(word in text.lower() for word in ["memory", "ram", "free"]):
+                                command = "memory"
+                            elif "uptime" in text.lower():
+                                command = "uptime"
+                            elif "load" in text.lower():
+                                command = "load"
+                            elif any(word in text.lower() for word in ["cpu", "processor"]):
+                                command = "cpu"
+                            elif "process" in text.lower():
+                                command = "processes"
+
+                            if command:
+                                logger.info(f"Running SSH command '{command}' on {host}")
+                                tool_result = run_command(host, command)
+                                if tool_result["success"]:
+                                    messages.append({"role": "assistant", "content": f"Let me check {command} on {host}."})
+                                    messages.append({"role": "user", "content": f"{tool_result['data']}\n\nPlease format and explain the output."})
+                                    tool_called = True
+                                else:
+                                    # If command failed, return error to user
+                                    messages.append({"role": "assistant", "content": f"I tried to check {command} on {host}."})
+                                    messages.append({"role": "user", "content": f"Error: {tool_result['error']}\n\nPlease explain to the user."})
+                                    tool_called = True
 
                 # If no tool was called, we have our final answer
                 if not tool_called:
