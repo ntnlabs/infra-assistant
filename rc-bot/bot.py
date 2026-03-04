@@ -76,6 +76,9 @@ logger = logging.getLogger(__name__)
 # State
 # =============================================================================
 
+# Bot start time - only process messages after this
+bot_start_time: Optional[datetime] = None
+
 # Conversation tracking: "room_id:user" -> {"messages": list, "last_activity": datetime}
 conversations: dict = {}
 
@@ -353,6 +356,25 @@ class RocketChatBot:
         if msg_id in processed_messages:
             return False
 
+        # Skip messages older than bot start time (prevents processing old messages on restart)
+        if bot_start_time:
+            msg_timestamp = message.get("ts")
+            if msg_timestamp:
+                # Parse timestamp - RC uses ISO format with microseconds
+                try:
+                    if isinstance(msg_timestamp, dict) and "$date" in msg_timestamp:
+                        msg_time = datetime.fromtimestamp(msg_timestamp["$date"] / 1000)
+                    elif isinstance(msg_timestamp, str):
+                        msg_time = datetime.fromisoformat(msg_timestamp.replace("Z", "+00:00"))
+                    else:
+                        msg_time = datetime.fromtimestamp(msg_timestamp / 1000)
+
+                    if msg_time < bot_start_time:
+                        logger.debug(f"Skipping old message from {msg_time}")
+                        return False
+                except Exception as e:
+                    logger.debug(f"Could not parse message timestamp: {e}")
+
         # Skip own messages
         sender = message.get("u", {}).get("username", "")
         if sender == RC_USERNAME:
@@ -593,7 +615,9 @@ class RocketChatBot:
 
     def run(self):
         """Main bot loop."""
-        logger.info("Starting Rocket.Chat <-> Dify bot...")
+        global bot_start_time
+
+        logger.info("Starting Rocket.Chat <-> Ollama bot...")
 
         if not self.connect():
             return
@@ -602,6 +626,10 @@ class RocketChatBot:
             return
 
         self.setup_dms()
+
+        # Set bot start time - only process messages after this point
+        bot_start_time = datetime.now()
+        logger.info(f"Bot start time: {bot_start_time.isoformat()}")
 
         logger.info(f"Bot ready. Polling every {POLL_INTERVAL}s")
         logger.info(f"Prefix: '{RC_PREFIX}' (empty = respond to all)")
