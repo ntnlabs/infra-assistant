@@ -248,9 +248,19 @@ class RocketChatBot:
                             data = json_lib.loads(line[6:])
                             event = data.get('event', '')
 
-                            # Collect answer chunks
-                            if event == 'agent_message' or event == 'message':
-                                full_answer += data.get('answer', '')
+                            # Collect answer chunks from any event that has 'answer'
+                            if 'answer' in data:
+                                answer_chunk = data.get('answer', '')
+                                if answer_chunk and not answer_chunk.startswith('{'):
+                                    # Only add non-JSON text (skip raw tool calls)
+                                    full_answer += answer_chunk
+
+                            # Also check for final message content
+                            if event in ['agent_message', 'message']:
+                                content = data.get('answer', '')
+                                if content and not content.startswith('{'):
+                                    if content not in full_answer:  # Avoid duplicates
+                                        full_answer += content
 
                             # Update conversation ID
                             if 'conversation_id' in data:
@@ -259,7 +269,7 @@ class RocketChatBot:
                         except json_lib.JSONDecodeError:
                             pass
 
-            return full_answer or "No response from assistant."
+            return full_answer.strip() or "No response from assistant."
 
         except requests.exceptions.Timeout:
             logger.error("Dify request timed out")
