@@ -76,9 +76,6 @@ logger = logging.getLogger(__name__)
 # State
 # =============================================================================
 
-# Bot start time - only process messages after this
-bot_start_time: Optional[datetime] = None
-
 # Conversation tracking: "room_id:user" -> {"messages": list, "last_activity": datetime}
 conversations: dict = {}
 
@@ -346,6 +343,7 @@ class RocketChatBot:
         self.rc: Optional[RocketChat] = None
         self.room_ids: dict = {}  # channel_name -> room_id
         self.dm_room_ids: set = set()  # DM room IDs
+        self.first_poll_done: set = set()  # Track rooms that have been polled once
 
     def connect(self) -> bool:
         """Connect to Rocket.Chat server."""
@@ -424,25 +422,6 @@ class RocketChatBot:
         # Skip already processed
         if msg_id in processed_messages:
             return False
-
-        # Skip messages older than bot start time (prevents processing old messages on restart)
-        if bot_start_time:
-            msg_timestamp = message.get("ts")
-            if msg_timestamp:
-                # Parse timestamp - RC uses ISO format with microseconds
-                try:
-                    if isinstance(msg_timestamp, dict) and "$date" in msg_timestamp:
-                        msg_time = datetime.fromtimestamp(msg_timestamp["$date"] / 1000)
-                    elif isinstance(msg_timestamp, str):
-                        msg_time = datetime.fromisoformat(msg_timestamp.replace("Z", "+00:00"))
-                    else:
-                        msg_time = datetime.fromtimestamp(msg_timestamp / 1000)
-
-                    if msg_time < bot_start_time:
-                        logger.debug(f"Skipping old message from {msg_time}")
-                        return False
-                except Exception as e:
-                    logger.debug(f"Could not parse message timestamp: {e}")
 
         # Skip own messages
         sender = message.get("u", {}).get("username", "")
@@ -679,6 +658,16 @@ class RocketChatBot:
                 if result.ok:
                     messages = result.json().get("messages", [])
 
+                    # On first poll, just mark all messages as seen without responding
+                    if room_id not in self.first_poll_done:
+                        logger.info(f"First poll of {channel_name}, marking {len(messages)} messages as seen")
+                        for message in messages:
+                            msg_id = message.get("_id", "")
+                            if msg_id:
+                                processed_messages.add(msg_id)
+                        self.first_poll_done.add(room_id)
+                        continue
+
                     # Process oldest first
                     for message in reversed(messages):
                         if self.should_respond(message, is_dm=False):
@@ -696,6 +685,17 @@ class RocketChatBot:
                 if result.ok:
                     messages = result.json().get("messages", [])
 
+                    # On first poll, just mark all messages as seen without responding
+                    dm_key = f"dm_{room_id}"
+                    if dm_key not in self.first_poll_done:
+                        logger.info(f"First poll of DM {room_id}, marking {len(messages)} messages as seen")
+                        for message in messages:
+                            msg_id = message.get("_id", "")
+                            if msg_id:
+                                processed_messages.add(msg_id)
+                        self.first_poll_done.add(dm_key)
+                        continue
+
                     # Process oldest first
                     for message in reversed(messages):
                         if self.should_respond(message, is_dm=True):
@@ -706,8 +706,6 @@ class RocketChatBot:
 
     def run(self):
         """Main bot loop."""
-        global bot_start_time
-
         logger.info("Starting Rocket.Chat <-> Ollama bot...")
 
         if not self.connect():
@@ -717,10 +715,6 @@ class RocketChatBot:
             return
 
         self.setup_dms()
-
-        # Set bot start time - only process messages after this point
-        bot_start_time = datetime.now()
-        logger.info(f"Bot start time: {bot_start_time.isoformat()}")
 
         logger.info(f"Bot ready. Polling every {POLL_INTERVAL}s")
         logger.info(f"Prefix: '{RC_PREFIX}' (empty = respond to all)")
