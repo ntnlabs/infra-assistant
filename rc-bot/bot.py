@@ -88,6 +88,7 @@ class RocketChatBot:
     def __init__(self):
         self.rc: Optional[RocketChat] = None
         self.room_ids: dict = {}  # channel_name -> room_id
+        self.dm_room_ids: set = set()  # DM room IDs
 
     def connect(self) -> bool:
         """Connect to Rocket.Chat server."""
@@ -140,7 +141,26 @@ class RocketChatBot:
 
         return True
 
-    def should_respond(self, message: dict) -> bool:
+    def setup_dms(self):
+        """Get DM room IDs."""
+        try:
+            # Get list of DM rooms
+            result = self.rc.im_list()
+            if result.ok:
+                ims = result.json().get("ims", [])
+                for im in ims:
+                    room_id = im.get("_id")
+                    username = im.get("username", "unknown")
+                    if room_id:
+                        self.dm_room_ids.add(room_id)
+                        logger.info(f"Monitoring DM with: {username}")
+
+                if self.dm_room_ids:
+                    logger.info(f"Monitoring {len(self.dm_room_ids)} DM conversations")
+        except Exception as e:
+            logger.warning(f"Could not setup DMs: {e}")
+
+    def should_respond(self, message: dict, is_dm: bool = False) -> bool:
         """Check if bot should respond to this message."""
         msg_id = message.get("_id", "")
 
@@ -163,20 +183,20 @@ class RocketChatBot:
                 logger.debug(f"User {sender} not in allowed list")
                 return False
 
-        # Check prefix (if configured)
-        if RC_PREFIX:
+        # Check prefix (only for channels, not DMs)
+        if not is_dm and RC_PREFIX:
             text = message.get("msg", "")
             if not text.lower().startswith(RC_PREFIX.lower()):
                 return False
 
         return True
 
-    def get_message_text(self, message: dict) -> str:
+    def get_message_text(self, message: dict, is_dm: bool = False) -> str:
         """Extract and clean message text."""
         text = message.get("msg", "")
 
-        # Remove prefix if configured
-        if RC_PREFIX and text.lower().startswith(RC_PREFIX.lower()):
+        # Remove prefix if configured (only for channels, not DMs)
+        if not is_dm and RC_PREFIX and text.lower().startswith(RC_PREFIX.lower()):
             text = text[len(RC_PREFIX):].strip()
 
         return text
@@ -295,7 +315,7 @@ class RocketChatBot:
         except Exception as e:
             logger.error(f"Error sending message: {e}")
 
-    def process_message(self, message: dict, room_id: str):
+    def process_message(self, message: dict, room_id: str, is_dm: bool = False):
         """Process a single message."""
         msg_id = message.get("_id", "")
 
@@ -309,13 +329,14 @@ class RocketChatBot:
                 processed_messages.discard(item)
 
         # Extract info
-        text = self.get_message_text(message)
+        text = self.get_message_text(message, is_dm=is_dm)
         user = message.get("u", {}).get("username", "unknown")
 
         if not text:
             return
 
-        logger.info(f"Message from {user}: {text[:100]}...")
+        msg_type = "DM" if is_dm else "channel"
+        logger.info(f"[{msg_type}] Message from {user}: {text[:100]}...")
 
         # Get response from Dify
         response = self.call_dify(text, room_id, user)
@@ -340,11 +361,28 @@ class RocketChatBot:
 
                     # Process oldest first
                     for message in reversed(messages):
-                        if self.should_respond(message):
-                            self.process_message(message, room_id)
+                        if self.should_respond(message, is_dm=False):
+                            self.process_message(message, room_id, is_dm=False)
 
             except Exception as e:
                 logger.error(f"Error polling {channel_name}: {e}")
+
+    def poll_dms(self):
+        """Poll for new messages in DMs."""
+        for room_id in self.dm_room_ids:
+            try:
+                result = self.rc.im_history(room_id=room_id, count=10)
+
+                if result.ok:
+                    messages = result.json().get("messages", [])
+
+                    # Process oldest first
+                    for message in reversed(messages):
+                        if self.should_respond(message, is_dm=True):
+                            self.process_message(message, room_id, is_dm=True)
+
+            except Exception as e:
+                logger.debug(f"Error polling DM {room_id}: {e}")
 
     def run(self):
         """Main bot loop."""
@@ -356,6 +394,8 @@ class RocketChatBot:
         if not self.setup_channels():
             return
 
+        self.setup_dms()
+
         logger.info(f"Bot ready. Polling every {POLL_INTERVAL}s")
         logger.info(f"Prefix: '{RC_PREFIX}' (empty = respond to all)")
         logger.info(f"Allowed users: {RC_ALLOWED_USERS or 'all'}")
@@ -366,6 +406,7 @@ class RocketChatBot:
         while True:
             try:
                 self.poll_messages()
+                self.poll_dms()
                 reconnect_attempts = 0
 
             except Exception as e:
