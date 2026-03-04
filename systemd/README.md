@@ -29,6 +29,10 @@ Service files for running components as systemd services.
    # RC Bot
    sudo systemctl enable rc-bot
    sudo systemctl start rc-bot
+
+   # Zabbix Poller (timer - runs every 5 minutes)
+   sudo systemctl enable zabbix-poller.timer
+   sudo systemctl start zabbix-poller.timer
    ```
 
 5. Check status:

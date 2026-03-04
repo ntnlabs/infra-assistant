@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Zabbix Alert Poller every 5 minutes
+Requires=zabbix-poller.service
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
