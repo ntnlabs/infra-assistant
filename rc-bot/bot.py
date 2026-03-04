@@ -181,26 +181,29 @@ class RocketChatBot:
 
         return text
 
-    def get_conversation_id(self, room_id: str) -> str:
-        """Get or create conversation ID for a room."""
-        if room_id in conversations:
-            conv = conversations[room_id]
+    def get_conversation_id(self, room_id: str, user: str) -> str:
+        """Get or create conversation ID for a room + user."""
+        conv_key = f"{room_id}:{user}"
+
+        if conv_key in conversations:
+            conv = conversations[conv_key]
 
             # Check if conversation is still active
             if CONVERSATION_TIMEOUT > 0:
                 elapsed = datetime.now() - conv["last_activity"]
                 if elapsed > timedelta(seconds=CONVERSATION_TIMEOUT):
-                    logger.info(f"Conversation expired for room {room_id}")
-                    del conversations[room_id]
+                    logger.info(f"Conversation expired for {user} in room {room_id}")
+                    del conversations[conv_key]
                     return ""
 
             return conv.get("dify_conversation_id", "")
 
         return ""
 
-    def update_conversation(self, room_id: str, dify_conv_id: str):
+    def update_conversation(self, room_id: str, user: str, dify_conv_id: str):
         """Update conversation tracking."""
-        conversations[room_id] = {
+        conv_key = f"{room_id}:{user}"
+        conversations[conv_key] = {
             "dify_conversation_id": dify_conv_id,
             "last_activity": datetime.now()
         }
@@ -208,7 +211,7 @@ class RocketChatBot:
     def call_dify(self, text: str, room_id: str, user: str) -> str:
         """Send message to Dify and get response (streaming mode for Agent apps)."""
         import json as json_lib
-        conversation_id = self.get_conversation_id(room_id)
+        conversation_id = self.get_conversation_id(room_id, user)
 
         try:
             response = requests.post(
@@ -264,7 +267,7 @@ class RocketChatBot:
 
                             # Update conversation ID
                             if 'conversation_id' in data:
-                                self.update_conversation(room_id, data['conversation_id'])
+                                self.update_conversation(room_id, user, data['conversation_id'])
 
                         except json_lib.JSONDecodeError:
                             pass
