@@ -111,6 +111,12 @@ You have access to these tools - use them proactively when relevant:
    - Use when: Users ask about overall status, host counts, or general health
    - Returns: Total hosts, hosts up/down, active problems, and trigger counts
 
+3. **manage_alert** - Acknowledge or close Zabbix alerts
+   - Use when: Users ask to acknowledge, ack, or close an alert
+   - Requires: Event ID (from get_active_alerts)
+   - Actions: acknowledge (mark as seen) or close (resolve the alert)
+   - Can add optional message/comment explaining the action taken
+
 ## Communication Guidelines
 
 **Tone and Style:**
@@ -234,6 +240,47 @@ def get_infrastructure_summary() -> dict:
         return {"success": False, "error": str(e)}
 
 
+def manage_alert(event_id: str, action: str = "acknowledge", message: str = "") -> dict:
+    """Acknowledge or close a Zabbix alert.
+
+    Args:
+        event_id: Event ID from Zabbix (get from active alerts)
+        action: Action to perform - "acknowledge" or "close"
+        message: Optional comment/message to add
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    try:
+        response = requests.post(
+            f"{ZABBIX_PROXY_URL}/acknowledge",
+            headers={
+                "Authorization": f"Bearer {ZABBIX_PROXY_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "event_ids": [event_id],
+                "action": action,
+                "message": message
+            },
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("success"):
+            result = f"✅ Successfully {action}d alert {event_id}"
+            if message:
+                result += f" with message: '{message}'"
+            return {"success": True, "data": result}
+        else:
+            return {"success": False, "error": data.get("error", "Unknown error")}
+
+    except Exception as e:
+        logger.error(f"Error managing alert: {e}")
+        return {"success": False, "error": str(e)}
+
+
 # Tool definitions for LLM
 TOOLS = [
     {
@@ -256,13 +303,35 @@ TOOLS = [
         "name": "get_infrastructure_summary",
         "description": "Get overview of infrastructure status including host counts and active problems. Use this for general status questions.",
         "parameters": {}
+    },
+    {
+        "name": "manage_alert",
+        "description": "Acknowledge or close a Zabbix alert. Use when users ask to ack, acknowledge, or close an alert. Requires event ID from active alerts.",
+        "parameters": {
+            "event_id": {
+                "type": "string",
+                "description": "Event ID from Zabbix (get from active alerts first)",
+                "required": True
+            },
+            "action": {
+                "type": "string",
+                "description": "Action to perform: 'acknowledge' or 'close'. Default: acknowledge",
+                "default": "acknowledge"
+            },
+            "message": {
+                "type": "string",
+                "description": "Optional comment/message to add to the acknowledgment",
+                "default": ""
+            }
+        }
     }
 ]
 
 # Map tool names to functions
 TOOL_FUNCTIONS = {
     "get_active_alerts": get_active_alerts,
-    "get_infrastructure_summary": get_infrastructure_summary
+    "get_infrastructure_summary": get_infrastructure_summary,
+    "manage_alert": manage_alert
 }
 
 
@@ -513,6 +582,27 @@ class RocketChatBot:
                             messages.append({"role": "assistant", "content": "Let me check the infrastructure summary."})
                             messages.append({"role": "user", "content": f"Here is the infrastructure summary:\n{tool_result['data']}\n\nPlease analyze and respond to the original question."})
                             tool_called = True
+
+                # Check for alert management (acknowledge, close)
+                if any(word in content.lower() for word in ["acknowledge", "ack", "close alert", "close event"]):
+                    if not tool_called and iteration == 1:
+                        # Try to extract event ID from user message
+                        import re
+                        event_match = re.search(r'(?:event|alert)\s+(?:id\s+)?(\d+)', text.lower())
+                        if event_match:
+                            event_id = event_match.group(1)
+                            # Determine action
+                            action = "close" if "close" in text.lower() else "acknowledge"
+                            # Extract message if present
+                            msg_match = re.search(r'(?:message|comment|reason):\s*["\']?([^"\']+)["\']?', text, re.IGNORECASE)
+                            message = msg_match.group(1).strip() if msg_match else ""
+
+                            logger.info(f"Managing alert {event_id}: {action}")
+                            tool_result = manage_alert(event_id, action, message)
+                            if tool_result["success"]:
+                                messages.append({"role": "assistant", "content": f"I'll {action} event {event_id}."})
+                                messages.append({"role": "user", "content": f"Result:\n{tool_result['data']}\n\nPlease confirm to the user."})
+                                tool_called = True
 
                 # If no tool was called, we have our final answer
                 if not tool_called:

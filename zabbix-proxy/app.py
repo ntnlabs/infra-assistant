@@ -11,6 +11,7 @@ Endpoints:
 - GET /hosts - Get monitored hosts
 - GET /host/<name>/problems - Get problems for specific host
 - GET /triggers - Get triggers
+- POST /acknowledge - Acknowledge or close events
 """
 
 import os
@@ -443,6 +444,76 @@ def get_summary():
 
     except Exception as e:
         logger.error(f"Error getting summary: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/acknowledge", methods=["POST"])
+@require_token
+def acknowledge_event():
+    """
+    Acknowledge or close Zabbix events.
+
+    POST body:
+    {
+        "event_ids": ["12345", "12346"],
+        "action": "acknowledge" | "close" | "acknowledge_with_message",
+        "message": "Fixed by restarting service" (optional)
+    }
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Request body required"}), 400
+
+        event_ids = data.get("event_ids", [])
+        action_type = data.get("action", "acknowledge")
+        message = data.get("message", "")
+
+        if not event_ids:
+            return jsonify({"error": "event_ids required"}), 400
+
+        # Convert event_ids to strings
+        event_ids = [str(eid) for eid in event_ids]
+
+        # Map action type to Zabbix action bitmask
+        # 1=close, 2=acknowledge, 4=add message, 8=change severity
+        action_map = {
+            "acknowledge": 2,
+            "close": 1,
+            "acknowledge_with_message": 6,  # acknowledge + message
+            "close_with_message": 5  # close + message
+        }
+
+        action_value = action_map.get(action_type)
+        if action_value is None:
+            return jsonify({"error": f"Invalid action: {action_type}"}), 400
+
+        # If message provided, add message flag
+        if message and action_value in [1, 2]:
+            action_value += 4
+
+        # Call Zabbix API
+        params = {
+            "eventids": event_ids,
+            "action": action_value
+        }
+
+        if message:
+            params["message"] = message
+
+        result = zabbix.api_call("event.acknowledge", params)
+
+        if result:
+            return jsonify({
+                "success": True,
+                "event_ids": result.get("eventids", []),
+                "message": f"Successfully {action_type}d {len(event_ids)} event(s)"
+            })
+        else:
+            return jsonify({"error": "Failed to acknowledge events"}), 500
+
+    except Exception as e:
+        logger.error(f"Error acknowledging events: {e}")
         return jsonify({"error": str(e)}), 500
 
 
