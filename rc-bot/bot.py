@@ -393,7 +393,7 @@ class RocketChatBot:
         # Check prefix (only for channels, not DMs)
         if not is_dm and RC_PREFIX:
             text = message.get("msg", "")
-            if not text.lower().startswith(RC_PREFIX.lower()):
+            if RC_PREFIX.lower() not in text.lower():
                 return False
 
         return True
@@ -402,7 +402,8 @@ class RocketChatBot:
         """Extract and clean message text."""
         text = message.get("msg", "")
 
-        # Remove prefix if configured (only for channels, not DMs)
+        # Remove prefix if it's at the start (only for channels, not DMs)
+        # If prefix is in the middle/end (e.g., "hey @bob"), leave it - LLM can handle it
         if not is_dm and RC_PREFIX and text.lower().startswith(RC_PREFIX.lower()):
             text = text[len(RC_PREFIX):].strip()
 
