@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-Rocket.Chat <-> Dify Bridge Bot
-===============================
-Forwards messages from Rocket.Chat to Dify and sends responses back.
+Rocket.Chat <-> Ollama Bot
+==========================
+Infrastructure assistant bot with direct Ollama integration.
 
 Configuration via environment variables (or .env file):
 - RC_URL, RC_USERNAME, RC_PASSWORD
 - RC_CHANNELS, RC_ALLOWED_USERS, RC_PREFIX
-- DIFY_URL, DIFY_API_KEY
+- OLLAMA_URL, OLLAMA_MODEL
+- ZABBIX_PROXY_URL, ZABBIX_PROXY_TOKEN
 - POLL_INTERVAL, CONVERSATION_TIMEOUT, DEBUG
 
 Usage:
@@ -46,9 +47,13 @@ RC_CHANNELS = [c.strip() for c in os.environ.get("RC_CHANNELS", "").split(",") i
 RC_ALLOWED_USERS = [u.strip() for u in os.environ.get("RC_ALLOWED_USERS", "").split(",") if u.strip()]
 RC_PREFIX = os.environ.get("RC_PREFIX", "").strip()
 
-# Dify
-DIFY_URL = os.environ.get("DIFY_URL", "http://localhost/v1")
-DIFY_API_KEY = os.environ.get("DIFY_API_KEY", "")
+# Ollama
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
+
+# Zabbix (for tools)
+ZABBIX_PROXY_URL = os.environ.get("ZABBIX_PROXY_URL", "http://localhost:5002")
+ZABBIX_PROXY_TOKEN = os.environ.get("ZABBIX_PROXY_TOKEN", "")
 
 # Settings
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "2"))
@@ -71,12 +76,125 @@ logger = logging.getLogger(__name__)
 # State
 # =============================================================================
 
-# Conversation tracking: room_id -> {"dify_conversation_id": str, "last_activity": datetime}
+# Conversation tracking: "room_id:user" -> {"messages": list, "last_activity": datetime}
 conversations: dict = {}
 
 # Track processed message IDs to avoid duplicates
 processed_messages: set = set()
 MAX_PROCESSED_MESSAGES = 10000
+
+# System prompt for the bot
+SYSTEM_PROMPT = """You are an infrastructure assistant helping with monitoring and operations.
+
+You have access to tools to check system status and alerts. When users ask about infrastructure,
+use the appropriate tools to get real-time information.
+
+Be concise and helpful. Focus on actionable information."""
+
+# =============================================================================
+# Tools
+# =============================================================================
+
+def get_active_alerts(min_severity: int = 3, limit: int = 25) -> dict:
+    """Get active alerts from Zabbix.
+
+    Args:
+        min_severity: Minimum severity (0-5). Default 3 (Average).
+        limit: Max number of alerts to return.
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    try:
+        response = requests.get(
+            f"{ZABBIX_PROXY_URL}/problems",
+            headers={"Authorization": f"Bearer {ZABBIX_PROXY_TOKEN}"},
+            params={"severity": min_severity, "limit": limit},
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+        problems = data.get("problems", [])
+
+        if not problems:
+            return {"success": True, "data": "No active alerts found."}
+
+        # Format for readability
+        result = f"Found {len(problems)} active alerts:\n\n"
+        for p in problems[:limit]:
+            severity = p.get("severity", 0)
+            severity_names = ["Not classified", "Info", "Warning", "Average", "High", "Disaster"]
+            sev_name = severity_names[severity] if 0 <= severity <= 5 else "Unknown"
+            result += f"[{sev_name}] {p.get('name', 'Unknown')} on {p.get('hostname', 'Unknown')}\n"
+
+        return {"success": True, "data": result}
+
+    except Exception as e:
+        logger.error(f"Error getting alerts: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def get_infrastructure_summary() -> dict:
+    """Get infrastructure overview from Zabbix.
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    try:
+        response = requests.get(
+            f"{ZABBIX_PROXY_URL}/summary",
+            headers={"Authorization": f"Bearer {ZABBIX_PROXY_TOKEN}"},
+            timeout=30
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        summary = data.get("summary", {})
+        result = f"""Infrastructure Summary:
+- Total Hosts: {summary.get('total_hosts', 0)}
+- Hosts Up: {summary.get('hosts_up', 0)}
+- Hosts Down: {summary.get('hosts_down', 0)}
+- Active Problems: {summary.get('active_problems', 0)}
+- Active Triggers: {summary.get('active_triggers', 0)}"""
+
+        return {"success": True, "data": result}
+
+    except Exception as e:
+        logger.error(f"Error getting summary: {e}")
+        return {"success": False, "error": str(e)}
+
+
+# Tool definitions for LLM
+TOOLS = [
+    {
+        "name": "get_active_alerts",
+        "description": "Get current active alerts from Zabbix monitoring system. Use this when users ask about problems, alerts, or issues.",
+        "parameters": {
+            "min_severity": {
+                "type": "integer",
+                "description": "Minimum severity level (0=Not classified, 1=Info, 2=Warning, 3=Average, 4=High, 5=Disaster). Default: 3",
+                "default": 3
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of alerts to return. Default: 25",
+                "default": 25
+            }
+        }
+    },
+    {
+        "name": "get_infrastructure_summary",
+        "description": "Get overview of infrastructure status including host counts and active problems. Use this for general status questions.",
+        "parameters": {}
+    }
+]
+
+# Map tool names to functions
+TOOL_FUNCTIONS = {
+    "get_active_alerts": get_active_alerts,
+    "get_infrastructure_summary": get_infrastructure_summary
+}
+
 
 # =============================================================================
 # Bot Class
@@ -201,8 +319,8 @@ class RocketChatBot:
 
         return text
 
-    def get_conversation_id(self, room_id: str, user: str) -> str:
-        """Get or create conversation ID for a room + user."""
+    def get_conversation_history(self, room_id: str, user: str) -> list:
+        """Get conversation history for a room + user."""
         conv_key = f"{room_id}:{user}"
 
         if conv_key in conversations:
@@ -214,96 +332,118 @@ class RocketChatBot:
                 if elapsed > timedelta(seconds=CONVERSATION_TIMEOUT):
                     logger.info(f"Conversation expired for {user} in room {room_id}")
                     del conversations[conv_key]
-                    return ""
+                    return []
 
-            return conv.get("dify_conversation_id", "")
+            return conv.get("messages", [])
 
-        return ""
+        return []
 
-    def update_conversation(self, room_id: str, user: str, dify_conv_id: str):
-        """Update conversation tracking."""
+    def update_conversation(self, room_id: str, user: str, user_msg: str, assistant_msg: str):
+        """Update conversation history."""
         conv_key = f"{room_id}:{user}"
-        conversations[conv_key] = {
-            "dify_conversation_id": dify_conv_id,
-            "last_activity": datetime.now()
-        }
 
-    def call_dify(self, text: str, room_id: str, user: str) -> str:
-        """Send message to Dify and get response (streaming mode for Agent apps)."""
+        if conv_key not in conversations:
+            conversations[conv_key] = {
+                "messages": [],
+                "last_activity": datetime.now()
+            }
+
+        # Add messages to history
+        conversations[conv_key]["messages"].append({"role": "user", "content": user_msg})
+        conversations[conv_key]["messages"].append({"role": "assistant", "content": assistant_msg})
+        conversations[conv_key]["last_activity"] = datetime.now()
+
+        # Keep only last 20 messages (10 exchanges)
+        if len(conversations[conv_key]["messages"]) > 20:
+            conversations[conv_key]["messages"] = conversations[conv_key]["messages"][-20:]
+
+    def call_ollama(self, text: str, room_id: str, user: str) -> str:
+        """Send message to Ollama and get response with tool support."""
         import json as json_lib
-        conversation_id = self.get_conversation_id(room_id, user)
+
+        # Get conversation history
+        history = self.get_conversation_history(room_id, user)
+
+        # Build messages array
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": text})
+
+        max_iterations = 5  # Prevent infinite loops
+        iteration = 0
 
         try:
-            response = requests.post(
-                f"{DIFY_URL}/chat-messages",
-                headers={
-                    "Authorization": f"Bearer {DIFY_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "inputs": {},
-                    "query": text,
-                    "response_mode": "streaming",
-                    "conversation_id": conversation_id,
-                    "user": user
-                },
-                timeout=120,
-                stream=True
-            )
+            while iteration < max_iterations:
+                iteration += 1
 
-            if response.status_code == 401:
-                logger.error("Dify API key is invalid!")
-                return "Error: Invalid Dify API key."
+                # Call Ollama
+                response = requests.post(
+                    f"{OLLAMA_URL}/api/chat",
+                    json={
+                        "model": OLLAMA_MODEL,
+                        "messages": messages,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.7,
+                            "num_ctx": 4096
+                        }
+                    },
+                    timeout=120
+                )
 
-            if response.status_code == 404:
-                logger.error("Dify app not found - check DIFY_URL")
-                return "Error: Dify app not found."
+                if response.status_code != 200:
+                    logger.error(f"Ollama returned {response.status_code}: {response.text}")
+                    return f"Error: Ollama API returned {response.status_code}"
 
-            response.raise_for_status()
+                response.raise_for_status()
+                data = response.json()
+                assistant_message = data.get("message", {})
+                content = assistant_message.get("content", "").strip()
 
-            # Parse streaming response (Server-Sent Events format)
-            full_answer = ""
-            for line in response.iter_lines():
-                if line:
-                    line = line.decode('utf-8')
-                    if line.startswith('data: '):
-                        try:
-                            data = json_lib.loads(line[6:])
-                            event = data.get('event', '')
+                # Check if response contains a tool call
+                # Simple pattern: if message mentions using a tool, try to extract it
+                tool_called = False
 
-                            # Collect answer chunks from any event that has 'answer'
-                            if 'answer' in data:
-                                answer_chunk = data.get('answer', '')
-                                if answer_chunk and not answer_chunk.startswith('{'):
-                                    # Only add non-JSON text (skip raw tool calls)
-                                    full_answer += answer_chunk
+                # Look for simple tool call pattern in response
+                if "get_active_alerts" in content.lower() or "active alerts" in content.lower() or "problems" in content.lower():
+                    if not tool_called and iteration == 1:  # Only on first iteration
+                        logger.info("Detected need for active alerts")
+                        tool_result = get_active_alerts()
+                        if tool_result["success"]:
+                            # Add tool result to messages and retry
+                            messages.append({"role": "assistant", "content": "Let me check the active alerts."})
+                            messages.append({"role": "user", "content": f"Here are the active alerts:\n{tool_result['data']}\n\nPlease analyze and respond to the original question."})
+                            tool_called = True
 
-                            # Also check for final message content
-                            if event in ['agent_message', 'message']:
-                                content = data.get('answer', '')
-                                if content and not content.startswith('{'):
-                                    if content not in full_answer:  # Avoid duplicates
-                                        full_answer += content
+                if "get_infrastructure_summary" in content.lower() or "infrastructure status" in content.lower() or "summary" in content.lower():
+                    if not tool_called and iteration == 1:
+                        logger.info("Detected need for infrastructure summary")
+                        tool_result = get_infrastructure_summary()
+                        if tool_result["success"]:
+                            messages.append({"role": "assistant", "content": "Let me check the infrastructure summary."})
+                            messages.append({"role": "user", "content": f"Here is the infrastructure summary:\n{tool_result['data']}\n\nPlease analyze and respond to the original question."})
+                            tool_called = True
 
-                            # Update conversation ID
-                            if 'conversation_id' in data:
-                                self.update_conversation(room_id, user, data['conversation_id'])
+                # If no tool was called, we have our final answer
+                if not tool_called:
+                    # Update conversation history
+                    self.update_conversation(room_id, user, text, content)
+                    return content or "No response from assistant."
 
-                        except json_lib.JSONDecodeError:
-                            pass
+                # Otherwise, continue loop with tool results
 
-            return full_answer.strip() or "No response from assistant."
+            return "Error: Too many tool iterations"
 
         except requests.exceptions.Timeout:
-            logger.error("Dify request timed out")
+            logger.error("Ollama request timed out")
             return "Request timed out. The assistant is taking too long."
 
         except requests.exceptions.ConnectionError:
-            logger.error("Cannot connect to Dify")
-            return "Error: Cannot connect to Dify service."
+            logger.error("Cannot connect to Ollama")
+            return "Error: Cannot connect to Ollama service."
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Dify API error: {e}")
+        except Exception as e:
+            logger.error(f"Ollama API error: {e}")
             return f"Error: {str(e)}"
 
     def send_message(self, room_id: str, text: str):
@@ -338,8 +478,8 @@ class RocketChatBot:
         msg_type = "DM" if is_dm else "channel"
         logger.info(f"[{msg_type}] Message from {user}: {text[:100]}...")
 
-        # Get response from Dify
-        response = self.call_dify(text, room_id, user)
+        # Get response from Ollama
+        response = self.call_ollama(text, room_id, user)
 
         # Send response
         self.send_message(room_id, response)
@@ -440,8 +580,12 @@ def validate_config() -> bool:
         errors.append("RC_PASSWORD not configured")
     if not RC_CHANNELS:
         errors.append("RC_CHANNELS not configured")
-    if not DIFY_API_KEY or "CHANGE_THIS" in DIFY_API_KEY:
-        errors.append("DIFY_API_KEY not configured")
+    if not OLLAMA_URL:
+        errors.append("OLLAMA_URL not configured")
+    if not OLLAMA_MODEL:
+        errors.append("OLLAMA_MODEL not configured")
+    if not ZABBIX_PROXY_TOKEN or "CHANGE_THIS" in ZABBIX_PROXY_TOKEN:
+        errors.append("ZABBIX_PROXY_TOKEN not configured")
 
     if errors:
         logger.error("Configuration errors:")

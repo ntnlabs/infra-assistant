@@ -1,30 +1,32 @@
 # Infra Assistant
 
-Self-hosted infrastructure monitoring assistant using Dify + Ollama + Rocket.Chat.
+Self-hosted infrastructure monitoring assistant using Ollama + Rocket.Chat.
+
+Simple, customizable bot with direct LLM integration - no complex frameworks.
 
 ## Features
 
-- Conversational interface via Rocket.Chat
-- Reads Zabbix and Graylog APIs
-- Executes allowed SSH diagnostic commands
+- Conversational interface via Rocket.Chat (channels + DMs)
+- Built-in tools: Zabbix monitoring, infrastructure status
+- Direct Ollama integration - simple and fast
 - Privacy-first: runs entirely on your infrastructure
 - GPU isolation (locks Ollama to GPU1)
+- Easy to customize - tools are just Python functions
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/infra-assistant.git /opt/infra-assistant
+git clone https://github.com/ntnlabs/infra-assistant.git /opt/infra-assistant
 cd /opt/infra-assistant
 sudo ./install.sh
 ```
 
 Then:
-1. Open `http://YOUR_SERVER_IP/install` - complete Dify setup
-2. Edit `.env` with your credentials
-3. Edit `ssh-proxy/hosts.yaml` with your hosts
-4. Start services
+1. Edit `.env` with your credentials (Rocket.Chat, Zabbix, etc.)
+2. Start services: `sudo systemctl start rc-bot zabbix-proxy`
+3. Talk to the bot in Rocket.Chat
 
-See [SETUP_GUIDE.md](../SETUP_GUIDE.md) for detailed instructions.
+See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed instructions.
 
 ## Configuration
 
@@ -43,29 +45,43 @@ nano .env
 /opt/infra-assistant/
 ├── .env                  # Your secrets (gitignored)
 ├── .env.example          # Template
-├── dify/                 # Dify (auto-cloned)
-├── ssh-proxy/
-│   ├── hosts.yaml        # Your hosts (gitignored)
-│   ├── hosts.yaml.example
-│   ├── commands.yaml     # Allowed commands
-│   └── ...
-├── rc-bot/
-│   └── ...
-└── keys/                 # SSH keys (gitignored)
+├── rc-bot/               # Rocket.Chat bot
+│   └── bot.py            # Main bot with built-in tools
+├── zabbix-proxy/         # REST wrapper for Zabbix
+│   └── app.py
+├── zabbix-poller/        # Periodic alert checker
+│   └── poller.py
+└── systemd/              # Service files
 ```
 
 ## Components
 
 | Component | Port | Purpose |
 |-----------|------|---------|
-| Dify | 80 | Agent/workflow platform |
 | Ollama | 11434 | LLM inference (GPU1) |
-| SSH Proxy | 5001 | Controlled SSH execution |
-| RC Bot | - | Rocket.Chat bridge |
+| RC Bot | - | Rocket.Chat <-> Ollama bridge |
+| Zabbix Proxy | 5002 | REST API for Zabbix |
+| Zabbix Poller | - | Proactive alert notifications |
+
+## Adding Custom Tools
+
+Tools are just Python functions in `rc-bot/bot.py`. Example:
+
+```python
+def check_disk_space(host: str) -> dict:
+    """Check disk space on a host."""
+    # Your implementation here
+    return {"success": True, "data": "Disk usage: 45%"}
+
+# Add to TOOL_FUNCTIONS dict
+TOOL_FUNCTIONS["check_disk_space"] = check_disk_space
+```
+
+The bot will automatically detect when to use tools based on user questions.
 
 ## Security
 
-- SSH Proxy uses command allowlist
 - RC Bot filters by user/channel
 - All secrets in `.env` (gitignored)
-- Host configs in `hosts.yaml` (gitignored)
+- Zabbix proxy uses token authentication
+- Ollama runs locally (no external API calls)
