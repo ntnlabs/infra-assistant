@@ -128,9 +128,10 @@ class ZabbixClient:
     def get_problems(self, severity_min: int = 0, limit: int = 100) -> list:
         """Get active (unresolved) problems."""
         self.ensure_auth()
-        return self._call("problem.get", {
+
+        # Get problems (selectHosts doesn't work reliably in all Zabbix versions)
+        problems = self._call("problem.get", {
             "output": "extend",
-            "selectHosts": ["host", "name"],
             "selectTags": "extend",
             "recent": False,  # Don't use recent - it includes resolved problems
             "suppressed": False,  # Exclude suppressed problems
@@ -139,6 +140,39 @@ class ZabbixClient:
             "limit": limit,
             "severities": list(range(severity_min, 6))  # severity_min to 5 (disaster)
         })
+
+        # Get host info from triggers (objectid is the triggerid)
+        if problems:
+            trigger_ids = [p.get("objectid") for p in problems if p.get("objectid")]
+
+            if trigger_ids:
+                triggers = self._call("trigger.get", {
+                    "output": ["triggerid"],
+                    "triggerids": trigger_ids,
+                    "selectHosts": ["host", "name"],
+                    "preservekeys": True
+                })
+
+                # Map triggerid -> host info
+                trigger_host_map = {}
+                for tid, trigger in triggers.items():
+                    hosts = trigger.get("hosts", [])
+                    if hosts:
+                        trigger_host_map[tid] = hosts[0]
+
+                # Add host info to problems
+                for problem in problems:
+                    objectid = problem.get("objectid")
+                    if objectid in trigger_host_map:
+                        problem["hosts"] = [trigger_host_map[objectid]]
+                    else:
+                        problem["hosts"] = []
+            else:
+                # No trigger IDs, can't get hosts
+                for problem in problems:
+                    problem["hosts"] = []
+
+        return problems
 
     def get_hosts(self, group: str = None) -> list:
         """Get monitored hosts."""
