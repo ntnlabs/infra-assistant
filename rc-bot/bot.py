@@ -882,7 +882,7 @@ class RocketChatBot:
                                 tool_called = True
 
                 # Check for SSH command execution
-                if any(word in text.lower() for word in ["check disk", "disk space", "check memory", "uptime on", "run", "execute", "df", "free -"]):
+                if any(word in text.lower() for word in ["check disk", "disk space", "check memory", "check load", "load on", "uptime on", "check cpu", "check process", "run", "execute", "df", "free -"]):
                     if not tool_called and iteration == 1:
                         # Try to extract host and command
                         import re
