@@ -757,7 +757,7 @@ class RocketChatBot:
                         "keep_alive": -1,  # Keep model loaded in VRAM indefinitely
                         "options": {
                             "temperature": 0.3,  # Low temp = more factual, less creative/hallucination
-                            "num_ctx": 4096
+                            "num_ctx": 2048  # Smaller context = less confusion, less hallucination
                         }
                     },
                     timeout=120
@@ -952,6 +952,18 @@ class RocketChatBot:
 
         msg_type = "DM" if is_dm else "channel"
         logger.info(f"[{msg_type}] Message from {user}: {text[:100]}...")
+
+        # Check for context reset command
+        text_lower = text.lower().strip()
+        if text_lower in ["reset", "forget", "clear", "reset context", "forget conversation", "start over"]:
+            conv_key = f"{room_id}:{user}"
+            if conv_key in conversations:
+                del conversations[conv_key]
+                logger.info(f"Cleared conversation context for {user} in room {room_id}")
+                self.send_message(room_id, "Conversation context cleared. Starting fresh! 🔄")
+            else:
+                self.send_message(room_id, "No conversation context to clear. Already starting fresh! ✨")
+            return
 
         # Get response from Ollama
         response = self.call_ollama(text, room_id, user)
