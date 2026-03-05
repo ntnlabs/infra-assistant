@@ -570,7 +570,7 @@ TOOL_FUNCTIONS = {
 # =============================================================================
 
 class RocketChatBot:
-    """Rocket.Chat bot that forwards messages to Dify."""
+    """Rocket.Chat bot with direct Ollama integration for infrastructure monitoring."""
 
     def __init__(self):
         self.rc: Optional[RocketChat] = None

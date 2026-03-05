@@ -9,10 +9,14 @@ Service files for running components as systemd services.
    sed -i "s/YOUR_USER/$USER/g" *.service
    ```
 
-2. Symlink to systemd directory (better - updates automatically):
+2. Symlink to systemd directory (replace with your actual path):
    ```bash
-   sudo ln -s /opt/infra-assistant/systemd/zabbix-proxy.service /etc/systemd/system/
-   sudo ln -s /opt/infra-assistant/systemd/rc-bot.service /etc/systemd/system/
+   INSTALL_DIR="/data/local/infra-assistant"  # Or wherever you cloned it
+   sudo ln -s ${INSTALL_DIR}/systemd/ssh-proxy.service /etc/systemd/system/
+   sudo ln -s ${INSTALL_DIR}/systemd/zabbix-proxy.service /etc/systemd/system/
+   sudo ln -s ${INSTALL_DIR}/systemd/rc-bot.service /etc/systemd/system/
+   sudo ln -s ${INSTALL_DIR}/systemd/zabbix-poller.service /etc/systemd/system/
+   sudo ln -s ${INSTALL_DIR}/systemd/zabbix-poller.timer /etc/systemd/system/
    ```
 
 3. Reload systemd:
@@ -22,6 +26,10 @@ Service files for running components as systemd services.
 
 4. Enable and start services:
    ```bash
+   # SSH Proxy (independent command validator)
+   sudo systemctl enable ssh-proxy
+   sudo systemctl start ssh-proxy
+
    # Zabbix Proxy
    sudo systemctl enable zabbix-proxy
    sudo systemctl start zabbix-proxy
@@ -37,16 +45,13 @@ Service files for running components as systemd services.
 
 5. Check status:
    ```bash
-   sudo systemctl status zabbix-proxy
-   sudo systemctl status rc-bot
+   sudo systemctl status ssh-proxy zabbix-proxy rc-bot
    ```
 
 6. View logs:
    ```bash
-   tail -f /opt/infra-assistant/logs/zabbix-proxy.log
-   tail -f /opt/infra-assistant/logs/rc-bot.log
-
-   # Or with journalctl:
+   # With journalctl (recommended):
+   journalctl -u ssh-proxy -f
    journalctl -u zabbix-proxy -f
    journalctl -u rc-bot -f
    ```
@@ -55,8 +60,10 @@ Service files for running components as systemd services.
 
 | Service | Port | Description |
 |---------|------|-------------|
+| ssh-proxy | 5001 | SSH command validator (independent) |
 | zabbix-proxy | 5002 | REST API for Zabbix |
-| rc-bot | - | Rocket.Chat bridge |
+| rc-bot | - | Rocket.Chat bridge with Ollama |
+| zabbix-poller | - | Periodic alert checker (timer) |
 
 ## Managing Services
 

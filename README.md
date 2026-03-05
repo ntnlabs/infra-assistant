@@ -16,17 +16,18 @@ Simple, customizable bot with direct LLM integration - no complex frameworks.
 ## Quick Start
 
 ```bash
-git clone https://github.com/ntnlabs/infra-assistant.git /opt/infra-assistant
-cd /opt/infra-assistant
-sudo ./install.sh
+# Clone to your preferred location
+git clone https://github.com/ntnlabs/infra-assistant.git
+cd infra-assistant
+
+# Edit configuration
+cp .env.example .env
+nano .env
+
+# Set up systemd services (see systemd/README.md)
 ```
 
-Then:
-1. Edit `.env` with your credentials (Rocket.Chat, Zabbix, etc.)
-2. Start services: `sudo systemctl start rc-bot zabbix-proxy`
-3. Talk to the bot in Rocket.Chat
-
-See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed instructions.
+See [OPERATIONS.md](OPERATIONS.md) for detailed operations guide.
 
 ## Configuration
 
@@ -42,11 +43,15 @@ nano .env
 ## Directory Structure
 
 ```
-/opt/infra-assistant/
+infra-assistant/
 ├── .env                  # Your secrets (gitignored)
 ├── .env.example          # Template
 ├── rc-bot/               # Rocket.Chat bot
 │   └── bot.py            # Main bot with built-in tools
+├── ssh-proxy/            # SSH command validator (independent)
+│   ├── app.py
+│   ├── hosts.yaml        # Allowed hosts (gitignored)
+│   └── commands.yaml     # Allowed commands
 ├── zabbix-proxy/         # REST wrapper for Zabbix
 │   └── app.py
 ├── zabbix-poller/        # Periodic alert checker
@@ -58,8 +63,9 @@ nano .env
 
 | Component | Port | Purpose |
 |-----------|------|---------|
-| Ollama | 11434 | LLM inference (GPU1) |
+| Ollama | 11434 | LLM inference (GPU) |
 | RC Bot | - | Rocket.Chat <-> Ollama bridge |
+| SSH Proxy | 5001 | Independent command validator |
 | Zabbix Proxy | 5002 | REST API for Zabbix |
 | Zabbix Poller | - | Proactive alert notifications |
 
@@ -82,6 +88,8 @@ The bot will automatically detect when to use tools based on user questions.
 ## Security
 
 - RC Bot filters by user/channel
+- SSH commands validated by independent SSH Proxy (Bot cannot bypass)
+- Command and host allowlists managed separately from Bot
 - All secrets in `.env` (gitignored)
 - Zabbix proxy uses token authentication
 - Ollama runs locally (no external API calls)
