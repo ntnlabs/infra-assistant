@@ -55,10 +55,9 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 ZABBIX_PROXY_URL = os.environ.get("ZABBIX_PROXY_URL", "http://localhost:5002")
 ZABBIX_PROXY_TOKEN = os.environ.get("ZABBIX_PROXY_TOKEN", "")
 
-# SSH (for command execution)
-SSH_ALLOWED_HOSTS = [h.strip() for h in os.environ.get("SSH_ALLOWED_HOSTS", "").split(",") if h.strip()]
-SSH_USER = os.environ.get("SSH_USER", "monitor")
-SSH_KEY_PATH = os.environ.get("SSH_KEY_PATH", "")
+# SSH Proxy (for command execution - independent gatekeeper)
+SSH_PROXY_URL = os.environ.get("SSH_PROXY_URL", "http://localhost:5001")
+SSH_PROXY_TOKEN = os.environ.get("SSH_PROXY_TOKEN", "")
 
 # Settings
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "2"))
@@ -402,19 +401,24 @@ hey @bob, can you check disk space on web02?
 
 
 def run_command(host: str, command: str) -> dict:
-    """Run allowed command on remote host via SSH.
+    """Request command execution via SSH Proxy (independent gatekeeper).
+
+    IMPORTANT: This function does NOT execute commands directly.
+    It sends a request to the SSH Proxy service, which:
+    - Validates host against its own hosts.yaml allowlist
+    - Validates command against its own commands.yaml patterns
+    - Executes independently (Bob cannot bypass validation)
 
     Args:
-        host: Hostname or IP (must be in SSH_ALLOWED_HOSTS)
-        command: Command shorthand (df, memory, uptime, load, etc.)
+        host: Hostname (ssh-proxy validates against hosts.yaml)
+        command: Command shorthand (ssh-proxy validates against commands.yaml)
 
     Returns:
         dict with 'success' and 'data' or 'error'
     """
-    import subprocess
-
-    # Allowlist of safe commands
-    ALLOWED_COMMANDS = {
+    # Map common command names to actual commands
+    # Note: ssh-proxy will do final validation against commands.yaml
+    COMMAND_MAP = {
         "df": "df -h",
         "disk": "df -h",
         "disk_space": "df -h",
@@ -429,56 +433,48 @@ def run_command(host: str, command: str) -> dict:
         "listening": "ss -tlnp",
     }
 
-    # Check command is allowed
-    if command.lower() not in ALLOWED_COMMANDS:
-        available = ", ".join(sorted(ALLOWED_COMMANDS.keys()))
-        return {"success": False, "error": f"Command '{command}' not allowed. Available: {available}"}
+    # Map shorthand to actual command
+    actual_command = COMMAND_MAP.get(command.lower(), command)
 
-    # Check host is allowed
-    if not SSH_ALLOWED_HOSTS:
-        return {"success": False, "error": "No SSH hosts configured (SSH_ALLOWED_HOSTS in .env)"}
-
-    if host not in SSH_ALLOWED_HOSTS:
-        return {"success": False, "error": f"Host '{host}' not allowed. Allowed hosts: {', '.join(SSH_ALLOWED_HOSTS)}"}
+    if not SSH_PROXY_URL:
+        return {"success": False, "error": "SSH_PROXY_URL not configured"}
 
     try:
-        # Build SSH command
-        actual_command = ALLOWED_COMMANDS[command.lower()]
-        ssh_cmd = [
-            "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "ConnectTimeout=10",
-            "-o", "BatchMode=yes",  # Don't prompt for password
-        ]
+        logger.info(f"Requesting ssh-proxy to run '{actual_command}' on {host}")
 
-        # Add key if specified
-        if SSH_KEY_PATH:
-            ssh_cmd.extend(["-i", SSH_KEY_PATH])
-
-        ssh_cmd.append(f"{SSH_USER}@{host}")
-        ssh_cmd.append(actual_command)
-
-        logger.info(f"Executing SSH command on {host}: {actual_command}")
-
-        # Execute with timeout
-        result = subprocess.run(
-            ssh_cmd,
-            capture_output=True,
-            text=True,
-            timeout=30
+        # Send request to ssh-proxy (independent validator)
+        response = requests.post(
+            f"{SSH_PROXY_URL}/execute",
+            headers={"Authorization": f"Bearer {SSH_PROXY_TOKEN}"},
+            json={
+                "host": host,
+                "command": actual_command
+            },
+            timeout=60
         )
 
-        if result.returncode == 0:
-            output = result.stdout.strip()
+        if response.status_code == 401:
+            return {"success": False, "error": "SSH Proxy authentication failed (check SSH_PROXY_TOKEN)"}
+
+        if response.status_code == 403:
+            data = response.json()
+            return {"success": False, "error": f"SSH Proxy rejected: {data.get('error', 'Forbidden')}"}
+
+        response.raise_for_status()
+        data = response.json()
+
+        if data.get("success"):
+            output = data.get("output", "")
             return {"success": True, "data": f"Output from {host}:\n```\n{output}\n```"}
         else:
-            error = result.stderr.strip() or "Command failed"
-            return {"success": False, "error": f"SSH error on {host}: {error}"}
+            return {"success": False, "error": data.get("error", "Unknown error from ssh-proxy")}
 
-    except subprocess.TimeoutExpired:
-        return {"success": False, "error": f"Command timed out on {host}"}
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": f"SSH Proxy request timed out"}
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to SSH Proxy service (is it running?)"}
     except Exception as e:
-        logger.error(f"Error running SSH command: {e}")
+        logger.error(f"Error calling SSH Proxy: {e}")
         return {"success": False, "error": str(e)}
 
 
@@ -1086,6 +1082,8 @@ def validate_config() -> bool:
         errors.append("OLLAMA_MODEL not configured")
     if not ZABBIX_PROXY_TOKEN or "CHANGE_THIS" in ZABBIX_PROXY_TOKEN:
         errors.append("ZABBIX_PROXY_TOKEN not configured")
+    if not SSH_PROXY_TOKEN or "CHANGE_THIS" in SSH_PROXY_TOKEN:
+        errors.append("SSH_PROXY_TOKEN not configured")
 
     if errors:
         logger.error("Configuration errors:")
