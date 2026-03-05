@@ -4,11 +4,11 @@
 # Target: Ubuntu 24.04 LTS (or similar)
 #
 # This script will:
-# 1. Install Python dependencies
+# 1. Install system prerequisites
 # 2. Install Ollama (optional)
-# 3. Set up directory structure
+# 3. Create Python virtual environments
 # 4. Generate configuration files
-# 5. Set up systemd services
+# 5. Set up systemd services with correct paths
 #
 # Usage:
 #   chmod +x install.sh
@@ -157,7 +157,9 @@ if [ ! -f "${INSTALL_DIR}/.env" ]; then
         SSH_TOKEN=$(openssl rand -hex 32)
         ZABBIX_TOKEN=$(openssl rand -hex 32)
 
-        sed -i "s/CHANGE_THIS_GENERATE_WITH_openssl_rand_hex_32/${SSH_TOKEN}/" "${INSTALL_DIR}/.env"
+        # Replace first occurrence with SSH token
+        sed -i "0,/CHANGE_THIS_GENERATE_WITH_openssl_rand_hex_32/s/CHANGE_THIS_GENERATE_WITH_openssl_rand_hex_32/${SSH_TOKEN}/" "${INSTALL_DIR}/.env"
+        # Replace second occurrence with Zabbix token
         sed -i "0,/CHANGE_THIS_GENERATE_WITH_openssl_rand_hex_32/s/CHANGE_THIS_GENERATE_WITH_openssl_rand_hex_32/${ZABBIX_TOKEN}/" "${INSTALL_DIR}/.env"
 
         log_ok "Created .env with generated tokens"
@@ -174,6 +176,10 @@ fi
 if [ ! -f "${INSTALL_DIR}/ssh-proxy/hosts.yaml" ]; then
     if [ -f "${INSTALL_DIR}/ssh-proxy/hosts.yaml.example" ]; then
         cp "${INSTALL_DIR}/ssh-proxy/hosts.yaml.example" "${INSTALL_DIR}/ssh-proxy/hosts.yaml"
+
+        # Update key paths in hosts.yaml to match install directory
+        sed -i "s|/data/local/infra-assistant|${INSTALL_DIR}|g" "${INSTALL_DIR}/ssh-proxy/hosts.yaml"
+
         log_ok "Created ssh-proxy/hosts.yaml from example"
         log_warn "IMPORTANT: Edit ${INSTALL_DIR}/ssh-proxy/hosts.yaml with your actual hosts!"
     fi
@@ -187,70 +193,61 @@ chown -R "${ACTUAL_USER}:${ACTUAL_USER}" "${INSTALL_DIR}"
 log_ok "Configuration files created"
 
 # =============================================================================
-# Step 4: Python Dependencies
+# Step 4: Python Virtual Environments
 # =============================================================================
 
-log_step "Installing Python dependencies..."
+log_step "Creating Python virtual environments..."
 
-# RC Bot
-if [ -d "${INSTALL_DIR}/rc-bot" ] && [ -f "${INSTALL_DIR}/rc-bot/requirements.txt" ]; then
-    log_info "Setting up RC Bot Python environment..."
-    cd "${INSTALL_DIR}/rc-bot"
+# Function to create venv
+create_venv() {
+    local dir=$1
+    local name=$2
 
-    if [ ! -d "venv" ]; then
-        python3 -m venv venv
+    if [ -d "${INSTALL_DIR}/${dir}" ] && [ -f "${INSTALL_DIR}/${dir}/requirements.txt" ]; then
+        log_info "Setting up ${name}..."
+        cd "${INSTALL_DIR}/${dir}"
+
+        # Remove old venv if it exists and is broken
+        if [ -d "venv" ] && [ ! -f "venv/bin/python3" ]; then
+            log_warn "Removing broken venv in ${dir}"
+            rm -rf venv
+        fi
+
+        # Create venv if it doesn't exist
+        if [ ! -d "venv" ]; then
+            python3 -m venv venv || {
+                log_error "Failed to create venv for ${name}"
+                return 1
+            }
+        fi
+
+        # Install dependencies
+        ./venv/bin/pip install -q --upgrade pip || {
+            log_error "Failed to upgrade pip for ${name}"
+            return 1
+        }
+
+        ./venv/bin/pip install -q -r requirements.txt || {
+            log_error "Failed to install requirements for ${name}"
+            return 1
+        }
+
+        chown -R "${ACTUAL_USER}:${ACTUAL_USER}" venv
+        log_ok "${name} dependencies installed"
+
+        cd "${INSTALL_DIR}"
+        return 0
+    else
+        log_warn "${name} directory or requirements.txt not found, skipping"
+        return 1
     fi
+}
 
-    ./venv/bin/pip install -q --upgrade pip
-    ./venv/bin/pip install -q -r requirements.txt
-    chown -R "${ACTUAL_USER}:${ACTUAL_USER}" venv
-    log_ok "RC Bot dependencies installed"
-fi
-
-# Zabbix Proxy
-if [ -d "${INSTALL_DIR}/zabbix-proxy" ] && [ -f "${INSTALL_DIR}/zabbix-proxy/requirements.txt" ]; then
-    log_info "Setting up Zabbix Proxy Python environment..."
-    cd "${INSTALL_DIR}/zabbix-proxy"
-
-    if [ ! -d "venv" ]; then
-        python3 -m venv venv
-    fi
-
-    ./venv/bin/pip install -q --upgrade pip
-    ./venv/bin/pip install -q -r requirements.txt
-    chown -R "${ACTUAL_USER}:${ACTUAL_USER}" venv
-    log_ok "Zabbix Proxy dependencies installed"
-fi
-
-# Zabbix Poller
-if [ -d "${INSTALL_DIR}/zabbix-poller" ] && [ -f "${INSTALL_DIR}/zabbix-poller/requirements.txt" ]; then
-    log_info "Setting up Zabbix Poller Python environment..."
-    cd "${INSTALL_DIR}/zabbix-poller"
-
-    if [ ! -d "venv" ]; then
-        python3 -m venv venv
-    fi
-
-    ./venv/bin/pip install -q --upgrade pip
-    ./venv/bin/pip install -q -r requirements.txt
-    chown -R "${ACTUAL_USER}:${ACTUAL_USER}" venv
-    log_ok "Zabbix Poller dependencies installed"
-fi
-
-# SSH Proxy
-if [ -d "${INSTALL_DIR}/ssh-proxy" ] && [ -f "${INSTALL_DIR}/ssh-proxy/requirements.txt" ]; then
-    log_info "Setting up SSH Proxy Python environment..."
-    cd "${INSTALL_DIR}/ssh-proxy"
-
-    if [ ! -d "venv" ]; then
-        python3 -m venv venv
-    fi
-
-    ./venv/bin/pip install -q --upgrade pip
-    ./venv/bin/pip install -q -r requirements.txt
-    chown -R "${ACTUAL_USER}:${ACTUAL_USER}" venv
-    log_ok "SSH Proxy dependencies installed"
-fi
+# Create venvs for all services
+create_venv "rc-bot" "RC Bot"
+create_venv "ssh-proxy" "SSH Proxy"
+create_venv "zabbix-proxy" "Zabbix Proxy"
+create_venv "zabbix-poller" "Zabbix Poller"
 
 cd "${INSTALL_DIR}"
 
@@ -261,27 +258,66 @@ cd "${INSTALL_DIR}"
 log_step "Setting up systemd services..."
 
 if [ -d "${INSTALL_DIR}/systemd" ]; then
-    # Replace YOUR_USER placeholder if it exists
+    # Update service files with correct paths and user
+    log_info "Updating service file paths..."
     for service_file in "${INSTALL_DIR}/systemd"/*.service "${INSTALL_DIR}/systemd"/*.timer; do
         if [ -f "$service_file" ]; then
+            # Replace placeholder user with actual user
             sed -i "s|YOUR_USER|${ACTUAL_USER}|g" "$service_file"
+
+            # Replace any hardcoded paths with actual install directory
             sed -i "s|/opt/infra-assistant|${INSTALL_DIR}|g" "$service_file"
+            sed -i "s|/data/local/infra-assistant|${INSTALL_DIR}|g" "$service_file"
+
+            log_info "Updated $(basename "$service_file")"
         fi
     done
 
-    # Create symlinks
-    for service_file in "${INSTALL_DIR}/systemd"/*.{service,timer}; do
+    # Remove old symlinks if they exist
+    log_info "Cleaning up old service symlinks..."
+    for service_file in "${INSTALL_DIR}/systemd"/*.service "${INSTALL_DIR}/systemd"/*.timer; do
         if [ -f "$service_file" ]; then
             service_name=$(basename "$service_file")
-            if [ ! -L "/etc/systemd/system/${service_name}" ]; then
-                ln -sf "$service_file" "/etc/systemd/system/${service_name}"
-                log_info "Linked ${service_name}"
+            if [ -L "/etc/systemd/system/${service_name}" ] || [ -f "/etc/systemd/system/${service_name}" ]; then
+                rm -f "/etc/systemd/system/${service_name}"
+                log_info "Removed old ${service_name}"
             fi
         fi
     done
 
+    # Create new symlinks
+    log_info "Creating service symlinks..."
+    for service_file in "${INSTALL_DIR}/systemd"/*.service "${INSTALL_DIR}/systemd"/*.timer; do
+        if [ -f "$service_file" ]; then
+            service_name=$(basename "$service_file")
+            ln -sf "$service_file" "/etc/systemd/system/${service_name}"
+            log_ok "Linked ${service_name}"
+        fi
+    done
+
+    # Reload systemd
     systemctl daemon-reload
-    log_ok "Systemd services configured"
+    log_ok "Systemd daemon reloaded"
+
+    # Ask if user wants to enable and start services
+    echo ""
+    read -p "Enable and start services now? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        log_info "Enabling services..."
+        systemctl enable ssh-proxy zabbix-proxy rc-bot zabbix-poller.timer
+
+        log_info "Starting services..."
+        systemctl start ssh-proxy zabbix-proxy rc-bot zabbix-poller.timer
+
+        log_ok "Services enabled and started"
+
+        echo ""
+        log_info "Service status:"
+        systemctl status ssh-proxy zabbix-proxy rc-bot --no-pager -l || true
+    else
+        log_info "Skipped enabling/starting services"
+    fi
 fi
 
 # =============================================================================
@@ -292,6 +328,11 @@ echo ""
 echo -e "${GREEN}════════════════════════════════════════${NC}"
 echo -e "${GREEN}  Installation Complete!${NC}"
 echo -e "${GREEN}════════════════════════════════════════${NC}"
+echo ""
+echo -e "${CYAN}Installation Summary:${NC}"
+echo "  Install directory: ${INSTALL_DIR}"
+echo "  User: ${ACTUAL_USER}"
+echo "  Services: ssh-proxy, zabbix-proxy, rc-bot, zabbix-poller"
 echo ""
 echo -e "${CYAN}Next Steps:${NC}"
 echo ""
@@ -304,12 +345,16 @@ echo ""
 echo "   nano ${INSTALL_DIR}/ssh-proxy/hosts.yaml"
 echo "   - Add your actual hosts with SSH credentials"
 echo ""
-echo "2. ${YELLOW}Start services:${NC}"
-echo "   sudo systemctl enable --now ssh-proxy"
-echo "   sudo systemctl enable --now zabbix-proxy"
-echo "   sudo systemctl enable --now rc-bot"
-echo "   sudo systemctl enable --now zabbix-poller.timer"
-echo ""
+
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "2. ${YELLOW}Enable and start services:${NC}"
+    echo "   sudo systemctl enable --now ssh-proxy"
+    echo "   sudo systemctl enable --now zabbix-proxy"
+    echo "   sudo systemctl enable --now rc-bot"
+    echo "   sudo systemctl enable --now zabbix-poller.timer"
+    echo ""
+fi
+
 echo "3. ${YELLOW}Check status:${NC}"
 echo "   sudo systemctl status ssh-proxy zabbix-proxy rc-bot"
 echo ""
