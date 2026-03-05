@@ -133,13 +133,21 @@ class ZabbixClient:
         problems = self._call("problem.get", {
             "output": "extend",
             "selectTags": "extend",
+            "selectSuppressionData": "extend",  # Get suppression info
             "recent": False,  # Don't use recent - it includes resolved problems
-            "suppressed": False,  # Exclude suppressed problems
+            "suppressed": False,  # Exclude suppressed problems (may not work in all versions)
             "sortfield": ["eventid"],
             "sortorder": "DESC",
-            "limit": limit,
+            "limit": limit * 2,  # Request more, we'll filter manually
             "severities": list(range(severity_min, 6))  # severity_min to 5 (disaster)
         })
+
+        # Manual filter: remove suppressed problems (in case API parameter doesn't work)
+        if problems:
+            problems = [
+                p for p in problems
+                if p.get("suppressed") != "1" and not p.get("suppression_data")
+            ][:limit]  # Apply limit after filtering
 
         # Get host info from triggers (objectid is the triggerid)
         if problems:
