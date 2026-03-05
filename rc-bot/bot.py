@@ -289,6 +289,81 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "") 
         return {"success": False, "error": str(e)}
 
 
+def get_help() -> dict:
+    """Get help information about what Bob can do.
+
+    Returns:
+        dict with 'success' and 'data' containing help text
+    """
+    help_text = """# Bob - Infrastructure Assistant Help
+
+## Available Commands
+
+### Monitoring & Alerts
+- **Show alerts**: "@bob show active alerts" or "@bob what's wrong?"
+- **Infrastructure status**: "@bob infrastructure summary" or "@bob status"
+- **Acknowledge alert**: "@bob acknowledge alert 12345"
+- **Close alert**: "@bob close event 12345 fixed by restart"
+
+### SSH Commands
+You can run these commands on allowed hosts:
+"""
+
+    # Add available SSH commands
+    ssh_commands = {
+        "df/disk/disk_space": "Check disk usage",
+        "memory/free/ram": "Check memory usage",
+        "uptime": "Show system uptime",
+        "load": "Show load average",
+        "cpu": "Show CPU usage",
+        "processes": "Show top processes",
+        "network": "Show network interfaces",
+        "listening": "Show listening ports"
+    }
+
+    for cmd, desc in ssh_commands.items():
+        help_text += f"- **{cmd}**: {desc}\n"
+
+    help_text += "\n**Example**: \"@bob check disk on web01\"\n\n"
+
+    # Add allowed hosts
+    if SSH_ALLOWED_HOSTS:
+        help_text += "### Allowed Hosts\n"
+        for host in SSH_ALLOWED_HOSTS:
+            help_text += f"- {host}\n"
+    else:
+        help_text += "### Allowed Hosts\n(No SSH hosts configured)\n"
+
+    help_text += """
+## Usage Tips
+- Mention @bob anywhere in your message (doesn't have to be at start)
+- Works in channels and DMs
+- Ask naturally: "bob, what's the disk space on web01?"
+- Use event IDs from alerts to acknowledge/close them
+
+## Examples
+```
+@bob show me high severity alerts
+@bob what's the infrastructure status?
+@bob check memory on db01
+@bob acknowledge alert 12345
+hey @bob, can you check disk space on web02?
+```
+"""
+
+    # Check for custom help file
+    help_file = Path(__file__).parent.parent / "HELP.md"
+    if help_file.exists():
+        try:
+            with open(help_file, 'r') as f:
+                custom_help = f.read()
+            help_text += "\n\n## Additional Information\n\n" + custom_help
+        except Exception as e:
+            logger.debug(f"Could not read HELP.md: {e}")
+
+    return {"success": True, "data": help_text}
+
+
 def run_command(host: str, command: str) -> dict:
     """Run allowed command on remote host via SSH.
 
@@ -429,6 +504,11 @@ TOOLS = [
                 "required": True
             }
         }
+    },
+    {
+        "name": "get_help",
+        "description": "Show help information about available commands, allowed hosts, and how to use Bob. Use when users ask for help or list of commands.",
+        "parameters": {}
     }
 ]
 
@@ -437,7 +517,8 @@ TOOL_FUNCTIONS = {
     "get_active_alerts": get_active_alerts,
     "get_infrastructure_summary": get_infrastructure_summary,
     "manage_alert": manage_alert,
-    "run_command": run_command
+    "run_command": run_command,
+    "get_help": get_help
 }
 
 
@@ -650,6 +731,16 @@ class RocketChatBot:
                 # Check if response contains a tool call
                 # Simple pattern: if message mentions using a tool, try to extract it
                 tool_called = False
+
+                # Check for help request
+                if any(word in text.lower() for word in ["help", "commands", "what can you do", "how do i", "list commands"]):
+                    if not tool_called and iteration == 1:
+                        logger.info("Detected help request")
+                        tool_result = get_help()
+                        if tool_result["success"]:
+                            messages.append({"role": "assistant", "content": "Let me show you what I can do."})
+                            messages.append({"role": "user", "content": f"{tool_result['data']}\n\nPlease present this help information to the user in a friendly way."})
+                            tool_called = True
 
                 # Look for simple tool call pattern in response
                 if "get_active_alerts" in content.lower() or "active alerts" in content.lower() or "problems" in content.lower():
