@@ -448,7 +448,7 @@ def get_summary():
 
 
 @app.route("/acknowledge", methods=["POST"])
-@require_token
+@require_auth
 def acknowledge_event():
     """
     Acknowledge or close Zabbix events.
