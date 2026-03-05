@@ -767,8 +767,10 @@ class RocketChatBot:
         try:
             while iteration < max_iterations:
                 iteration += 1
+                logger.info(f"Ollama iteration {iteration}/{max_iterations}")
 
                 # Call Ollama
+                start_time = time.time()
                 response = requests.post(
                     f"{OLLAMA_URL}/api/chat",
                     json={
@@ -790,6 +792,9 @@ class RocketChatBot:
 
                 response.raise_for_status()
                 data = response.json()
+                elapsed = time.time() - start_time
+                logger.info(f"Ollama responded in {elapsed:.2f}s")
+
                 assistant_message = data.get("message", {})
                 content = assistant_message.get("content", "").strip()
 
