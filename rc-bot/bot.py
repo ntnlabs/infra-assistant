@@ -760,6 +760,7 @@ class RocketChatBot:
                         "model": OLLAMA_MODEL,
                         "messages": messages,
                         "stream": False,
+                        "keep_alive": -1,  # Keep model loaded in VRAM indefinitely
                         "options": {
                             "temperature": 0.3,  # Low temp = more factual, less creative/hallucination
                             "num_ctx": 4096
