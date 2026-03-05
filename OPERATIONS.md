@@ -166,8 +166,8 @@ if "check_service_status" in content.lower() or "service status" in content.lowe
 #### Step 5: Test and Deploy
 
 ```bash
-# Test the syntax
-cd /opt/infra-assistant/rc-bot
+# Test the syntax (adjust path to your installation)
+cd /data/local/infra-assistant/rc-bot
 python3 -c "import bot"
 
 # If no errors, restart
@@ -271,7 +271,11 @@ sudo systemctl start zabbix-poller.timer
 
 **To change the polling interval:**
 
-Edit `/opt/infra-assistant/systemd/zabbix-poller.timer`:
+Edit the timer file (either in your install directory or the systemd symlink):
+```bash
+sudo nano /etc/systemd/system/zabbix-poller.timer
+```
+
 ```ini
 [Timer]
 OnBootSec=1min
@@ -358,7 +362,10 @@ sudo journalctl -u rc-bot -u zabbix-proxy -u ollama -f
 
 5. **Check RC credentials in `.env`:**
    ```bash
-   grep RC_ /opt/infra-assistant/.env
+   # Find your .env location from systemd service
+   systemctl cat rc-bot | grep EnvironmentFile
+   # Then check the credentials
+   grep RC_ /path/to/your/.env
    ```
 
 ### Tools Not Working
@@ -371,7 +378,10 @@ sudo journalctl -u rc-bot -u zabbix-proxy -u ollama -f
 
 2. **Verify ZABBIX_PROXY_TOKEN in `.env`:**
    ```bash
-   grep ZABBIX /opt/infra-assistant/.env
+   # Find your .env location
+   systemctl cat zabbix-proxy | grep EnvironmentFile
+   # Then check the token
+   grep ZABBIX /path/to/your/.env
    ```
 
 3. **Check bot logs for tool errors:**

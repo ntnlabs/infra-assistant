@@ -7,13 +7,13 @@ Wants=network-online.target
 Type=simple
 User=YOUR_USER
 Group=YOUR_USER
-WorkingDirectory=/opt/infra-assistant/zabbix-proxy
-EnvironmentFile=/opt/infra-assistant/.env
-ExecStart=/opt/infra-assistant/zabbix-proxy/venv/bin/python app.py
+WorkingDirectory=/data/local/infra-assistant/zabbix-proxy
+EnvironmentFile=/data/local/infra-assistant/.env
+ExecStart=/data/local/infra-assistant/zabbix-proxy/venv/bin/python app.py
 Restart=always
 RestartSec=10
-StandardOutput=append:/opt/infra-assistant/logs/zabbix-proxy.log
-StandardError=append:/opt/infra-assistant/logs/zabbix-proxy.log
+StandardOutput=append:/data/local/infra-assistant/logs/zabbix-proxy.log
+StandardError=append:/data/local/infra-assistant/logs/zabbix-proxy.log
 
 [Install]
 WantedBy=multi-user.target

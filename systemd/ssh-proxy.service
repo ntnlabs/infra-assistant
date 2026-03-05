@@ -7,13 +7,13 @@ Wants=network-online.target
 Type=simple
 User=YOUR_USER
 Group=YOUR_USER
-WorkingDirectory=/opt/infra-assistant/ssh-proxy
-EnvironmentFile=/opt/infra-assistant/.env
-ExecStart=/opt/infra-assistant/ssh-proxy/venv/bin/gunicorn --bind 127.0.0.1:5001 --workers 2 --timeout 120 app:app
+WorkingDirectory=/data/local/infra-assistant/ssh-proxy
+EnvironmentFile=/data/local/infra-assistant/.env
+ExecStart=/data/local/infra-assistant/ssh-proxy/venv/bin/gunicorn --bind 127.0.0.1:5001 --workers 2 --timeout 120 app:app
 Restart=always
 RestartSec=10
-StandardOutput=append:/opt/infra-assistant/logs/ssh-proxy.log
-StandardError=append:/opt/infra-assistant/logs/ssh-proxy.log
+StandardOutput=append:/data/local/infra-assistant/logs/ssh-proxy.log
+StandardError=append:/data/local/infra-assistant/logs/ssh-proxy.log
 
 # Security hardening
 NoNewPrivileges=true

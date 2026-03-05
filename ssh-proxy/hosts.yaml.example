@@ -14,19 +14,19 @@ hosts:
   # - name: "webserver1"
   #   hostname: "192.168.1.10"
   #   username: "monitoring"
-  #   key_file: "/opt/infra-assistant/keys/monitoring_key"
+  #   key_file: "/data/local/infra-assistant/keys/monitoring_key"
   #
   # - name: "dbserver1"
   #   hostname: "192.168.1.20"
   #   username: "monitoring"
-  #   key_file: "/opt/infra-assistant/keys/monitoring_key"
+  #   key_file: "/data/local/infra-assistant/keys/monitoring_key"
   #
   # - name: "router1"
   #   hostname: "192.168.1.1"
   #   username: "admin"
-  #   key_file: "/opt/infra-assistant/keys/network_key"
+  #   key_file: "/data/local/infra-assistant/keys/network_key"
 
   - name: "localhost"
     hostname: "127.0.0.1"
     username: "monitoring"
-    key_file: "/opt/infra-assistant/keys/monitoring_key"
+    key_file: "/data/local/infra-assistant/keys/monitoring_key"
