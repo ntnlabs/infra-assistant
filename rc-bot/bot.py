@@ -383,13 +383,14 @@ You can run these commands on allowed hosts:
 
     help_text += "\n**Example**: \"@bob check disk on web01\"\n\n"
 
-    # Add allowed hosts
-    if SSH_ALLOWED_HOSTS:
-        help_text += "### Allowed Hosts\n"
-        for host in SSH_ALLOWED_HOSTS:
-            help_text += f"- {host}\n"
-    else:
-        help_text += "### Allowed Hosts\n(No SSH hosts configured)\n"
+    # Note about SSH commands
+    help_text += """### SSH Commands
+SSH commands are validated by an independent SSH Proxy.
+Allowed hosts and commands are configured in:
+- `ssh-proxy/hosts.yaml` (allowed hosts)
+- `ssh-proxy/commands.yaml` (allowed commands)
+
+"""
 
     help_text += """
 ## Usage Tips
@@ -645,8 +646,7 @@ class RocketChatBot:
                 logger.warning(f"Could not find channel: {channel}")
 
         if not self.room_ids:
-            logger.error("No valid channels found!")
-            return False
+            logger.warning("No channels configured - will only respond to DMs")
 
         return True
 
@@ -1107,8 +1107,7 @@ def validate_config() -> bool:
         errors.append("RC_USERNAME not configured")
     if not RC_PASSWORD or "CHANGE_THIS" in RC_PASSWORD:
         errors.append("RC_PASSWORD not configured")
-    if not RC_CHANNELS:
-        errors.append("RC_CHANNELS not configured")
+    # RC_CHANNELS is optional - bot can run DM-only
     if not OLLAMA_URL:
         errors.append("OLLAMA_URL not configured")
     if not OLLAMA_MODEL:

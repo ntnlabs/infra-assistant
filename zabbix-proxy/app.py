@@ -290,7 +290,8 @@ def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not ZABBIX_PROXY_TOKEN:
-            return f(*args, **kwargs)  # No token configured, allow all
+            # Fail closed: require token to be configured
+            return jsonify({"error": "Service not configured (ZABBIX_PROXY_TOKEN missing)"}), 503
 
         token = request.headers.get("Authorization", "").replace("Bearer ", "")
         if token != ZABBIX_PROXY_TOKEN:
