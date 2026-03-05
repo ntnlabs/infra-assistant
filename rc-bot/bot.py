@@ -113,10 +113,14 @@ You have access to these tools - use them proactively when relevant:
    - Use when: Users ask about overall status, host counts, or general health
    - Returns: Total hosts, hosts up/down, active problems, and trigger counts
 
-3. **manage_alert** - Acknowledge or close Zabbix alerts
-   - Use when: Users ask to acknowledge, ack, or close an alert
+3. **manage_alert** - Manage Zabbix alerts
+   - Use when: Users ask to acknowledge, close, change severity, or suppress/postpone an alert
    - Requires: Event ID (from get_active_alerts)
-   - Actions: acknowledge (mark as seen) or close (resolve the alert)
+   - Actions:
+     - acknowledge: Mark alert as seen
+     - close: Resolve the alert
+     - change_severity: Change alert severity (0=Not classified, 1=Info, 2=Warning, 3=Average, 4=High, 5=Disaster)
+     - suppress: Temporarily suppress/postpone alert notifications (snooze)
    - Can add optional message/comment explaining the action taken
 
 4. **run_command** - Execute diagnostic commands on remote hosts via SSH
@@ -248,36 +252,59 @@ def get_infrastructure_summary() -> dict:
         return {"success": False, "error": str(e)}
 
 
-def manage_alert(event_id: str, action: str = "acknowledge", message: str = "") -> dict:
-    """Acknowledge or close a Zabbix alert.
+def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", severity: int = None, suppress_hours: int = None) -> dict:
+    """Manage a Zabbix alert - acknowledge, close, change severity, or suppress.
 
     Args:
         event_id: Event ID from Zabbix (get from active alerts)
-        action: Action to perform - "acknowledge" or "close"
+        action: Action to perform - "acknowledge", "close", "change_severity", "suppress"
         message: Optional comment/message to add
+        severity: New severity (0-5) for change_severity action
+        suppress_hours: Hours to suppress alert (for suppress action)
 
     Returns:
         dict with 'success' and 'data' or 'error'
     """
     try:
+        payload = {
+            "event_ids": [event_id],
+            "action": action,
+            "message": message
+        }
+
+        if action == "change_severity":
+            if severity is None:
+                return {"success": False, "error": "Severity level (0-5) required for change_severity"}
+            payload["severity"] = severity
+
+        if action == "suppress" and suppress_hours:
+            import time
+            suppress_until = int(time.time()) + (suppress_hours * 3600)
+            payload["suppress_until"] = suppress_until
+
         response = requests.post(
             f"{ZABBIX_PROXY_URL}/acknowledge",
             headers={
                 "Authorization": f"Bearer {ZABBIX_PROXY_TOKEN}",
                 "Content-Type": "application/json"
             },
-            json={
-                "event_ids": [event_id],
-                "action": action,
-                "message": message
-            },
+            json=payload,
             timeout=30
         )
         response.raise_for_status()
         data = response.json()
 
         if data.get("success"):
-            result = f"✅ Successfully {action}d alert {event_id}"
+            if action == "change_severity":
+                severity_names = ["Not classified", "Info", "Warning", "Average", "High", "Disaster"]
+                sev_name = severity_names[severity] if 0 <= severity <= 5 else str(severity)
+                result = f"✅ Changed severity of alert {event_id} to {sev_name}"
+            elif action == "suppress":
+                hours = suppress_hours or "indefinitely"
+                result = f"✅ Suppressed alert {event_id} for {hours} hours"
+            else:
+                result = f"✅ Successfully {action}d alert {event_id}"
+
             if message:
                 result += f" with message: '{message}'"
             return {"success": True, "data": result}
@@ -304,6 +331,8 @@ def get_help() -> dict:
 - **Infrastructure status**: "@bob infrastructure summary" or "@bob status"
 - **Acknowledge alert**: "@bob acknowledge alert 12345"
 - **Close alert**: "@bob close event 12345 fixed by restart"
+- **Change severity**: "@bob change severity of alert 12345 to warning"
+- **Suppress/postpone**: "@bob suppress alert 12345 for 2 hours"
 
 ### SSH Commands
 You can run these commands on allowed hosts:
@@ -470,7 +499,7 @@ TOOLS = [
     },
     {
         "name": "manage_alert",
-        "description": "Acknowledge or close a Zabbix alert. Use when users ask to ack, acknowledge, or close an alert. Requires event ID from active alerts.",
+        "description": "Manage Zabbix alerts - acknowledge, close, change severity, or suppress. Use when users ask to manage alerts. Requires event ID from active alerts.",
         "parameters": {
             "event_id": {
                 "type": "string",
@@ -479,13 +508,23 @@ TOOLS = [
             },
             "action": {
                 "type": "string",
-                "description": "Action to perform: 'acknowledge' or 'close'. Default: acknowledge",
+                "description": "Action: 'acknowledge', 'close', 'change_severity', 'suppress'. Default: acknowledge",
                 "default": "acknowledge"
             },
             "message": {
                 "type": "string",
-                "description": "Optional comment/message to add to the acknowledgment",
+                "description": "Optional comment/message to add",
                 "default": ""
+            },
+            "severity": {
+                "type": "integer",
+                "description": "New severity for change_severity action (0-5: Not classified, Info, Warning, Average, High, Disaster)",
+                "default": None
+            },
+            "suppress_hours": {
+                "type": "integer",
+                "description": "Hours to suppress for suppress action (postpone notifications)",
+                "default": None
             }
         }
     },
@@ -762,24 +801,47 @@ class RocketChatBot:
                             messages.append({"role": "user", "content": f"Here is the infrastructure summary:\n{tool_result['data']}\n\nPlease analyze and respond to the original question."})
                             tool_called = True
 
-                # Check for alert management (acknowledge, close)
-                if any(word in content.lower() for word in ["acknowledge", "ack", "close alert", "close event"]):
+                # Check for alert management (acknowledge, close, change severity, suppress)
+                if any(word in text.lower() for word in ["acknowledge", "ack", "close alert", "close event", "change severity", "suppress", "postpone", "snooze"]):
                     if not tool_called and iteration == 1:
                         # Try to extract event ID from user message
                         import re
                         event_match = re.search(r'(?:event|alert)\s+(?:id\s+)?(\d+)', text.lower())
                         if event_match:
                             event_id = event_match.group(1)
+
                             # Determine action
-                            action = "close" if "close" in text.lower() else "acknowledge"
+                            action = "acknowledge"  # default
+                            severity = None
+                            suppress_hours = None
+
+                            if "close" in text.lower():
+                                action = "close"
+                            elif any(word in text.lower() for word in ["change severity", "set severity"]):
+                                action = "change_severity"
+                                # Try to extract severity
+                                sev_match = re.search(r'severity\s+(?:to\s+)?(\d+|info|warning|average|high|disaster)', text.lower())
+                                if sev_match:
+                                    sev_str = sev_match.group(1)
+                                    severity_map = {"info": 1, "information": 1, "warning": 2, "average": 3, "high": 4, "disaster": 5}
+                                    severity = severity_map.get(sev_str, int(sev_str) if sev_str.isdigit() else 3)
+                            elif any(word in text.lower() for word in ["suppress", "postpone", "snooze"]):
+                                action = "suppress"
+                                # Try to extract hours
+                                hours_match = re.search(r'(\d+)\s*(?:hour|hr)', text.lower())
+                                if hours_match:
+                                    suppress_hours = int(hours_match.group(1))
+                                else:
+                                    suppress_hours = 2  # Default 2 hours
+
                             # Extract message if present
                             msg_match = re.search(r'(?:message|comment|reason):\s*["\']?([^"\']+)["\']?', text, re.IGNORECASE)
                             message = msg_match.group(1).strip() if msg_match else ""
 
                             logger.info(f"Managing alert {event_id}: {action}")
-                            tool_result = manage_alert(event_id, action, message)
+                            tool_result = manage_alert(event_id, action, message, severity, suppress_hours)
                             if tool_result["success"]:
-                                messages.append({"role": "assistant", "content": f"I'll {action} event {event_id}."})
+                                messages.append({"role": "assistant", "content": f"I'll {action.replace('_', ' ')} event {event_id}."})
                                 messages.append({"role": "user", "content": f"Result:\n{tool_result['data']}\n\nPlease confirm to the user."})
                                 tool_called = True
 

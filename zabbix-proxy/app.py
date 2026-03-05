@@ -468,6 +468,8 @@ def acknowledge_event():
         event_ids = data.get("event_ids", [])
         action_type = data.get("action", "acknowledge")
         message = data.get("message", "")
+        severity = data.get("severity")  # For change_severity action
+        suppress_until = data.get("suppress_until")  # Unix timestamp for suppress
 
         if not event_ids:
             return jsonify({"error": "event_ids required"}), 400
@@ -476,12 +478,13 @@ def acknowledge_event():
         event_ids = [str(eid) for eid in event_ids]
 
         # Map action type to Zabbix action bitmask
-        # 1=close, 2=acknowledge, 4=add message, 8=change severity
+        # 1=close, 2=acknowledge, 4=add message, 8=change severity, 16=unacknowledge, 32=suppress
         action_map = {
             "acknowledge": 2,
             "close": 1,
-            "acknowledge_with_message": 6,  # acknowledge + message
-            "close_with_message": 5  # close + message
+            "change_severity": 8,
+            "suppress": 32,
+            "unacknowledge": 16
         }
 
         action_value = action_map.get(action_type)
@@ -489,7 +492,7 @@ def acknowledge_event():
             return jsonify({"error": f"Invalid action: {action_type}"}), 400
 
         # If message provided, add message flag
-        if message and action_value in [1, 2]:
+        if message and action_value in [1, 2, 8, 32]:
             action_value += 4
 
         # Call Zabbix API
@@ -500,6 +503,15 @@ def acknowledge_event():
 
         if message:
             params["message"] = message
+
+        if action_type == "change_severity":
+            if severity is None:
+                return jsonify({"error": "severity required for change_severity action"}), 400
+            params["severity"] = int(severity)
+
+        if action_type == "suppress":
+            if suppress_until:
+                params["suppress_until"] = int(suppress_until)
 
         result = zabbix.api_call("event.acknowledge", params)
 
