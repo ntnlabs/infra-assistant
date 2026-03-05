@@ -19,13 +19,16 @@ commands:
   - pattern: "^df -h$"
     description: "Check disk space"
 
-  - pattern: "^free -m$"
+  - pattern: "^free -(m|h)$"
     description: "Check memory usage"
 
   - pattern: "^cat /proc/loadavg$"
     description: "Check load average"
 
   # === Process Info ===
+  - pattern: "^top -bn1 \\| head -[0-9]+$"
+    description: "Top processes snapshot"
+
   - pattern: "^ps aux --sort=-%cpu \\| head -[0-9]+$"
     description: "Top processes by CPU"
 
