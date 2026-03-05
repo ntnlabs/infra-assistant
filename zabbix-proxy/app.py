@@ -157,24 +157,38 @@ class ZabbixClient:
                 triggers = self._call("trigger.get", {
                     "output": ["triggerid"],
                     "triggerids": trigger_ids,
-                    "selectHosts": ["host", "name"],
+                    "selectHosts": ["host", "name", "status"],  # Include status to filter disabled hosts
                     "preservekeys": True
                 })
 
-                # Map triggerid -> host info
+                # Map triggerid -> host info (only for enabled hosts)
                 trigger_host_map = {}
+                disabled_triggers = set()
                 for tid, trigger in triggers.items():
                     hosts = trigger.get("hosts", [])
                     if hosts:
-                        trigger_host_map[tid] = hosts[0]
+                        host = hosts[0]
+                        # status: "0" = monitored/enabled, "1" = disabled
+                        if host.get("status") == "0":
+                            trigger_host_map[tid] = host
+                        else:
+                            disabled_triggers.add(tid)
 
-                # Add host info to problems
+                # Add host info to problems and filter out disabled hosts
+                filtered_problems = []
                 for problem in problems:
                     objectid = problem.get("objectid")
+                    # Skip problems from disabled hosts
+                    if objectid in disabled_triggers:
+                        continue
+                    # Add host info
                     if objectid in trigger_host_map:
                         problem["hosts"] = [trigger_host_map[objectid]]
                     else:
                         problem["hosts"] = []
+                    filtered_problems.append(problem)
+
+                problems = filtered_problems
             else:
                 # No trigger IDs, can't get hosts
                 for problem in problems:
