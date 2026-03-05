@@ -126,13 +126,14 @@ class ZabbixClient:
                 raise Exception("Failed to authenticate with Zabbix")
 
     def get_problems(self, severity_min: int = 0, limit: int = 100) -> list:
-        """Get active problems."""
+        """Get active (unresolved) problems."""
         self.ensure_auth()
         return self._call("problem.get", {
             "output": "extend",
             "selectHosts": ["host", "name"],
             "selectTags": "extend",
-            "recent": True,
+            "recent": False,  # Don't use recent - it includes resolved problems
+            "suppressed": False,  # Exclude suppressed problems
             "sortfield": ["eventid"],
             "sortorder": "DESC",
             "limit": limit,
