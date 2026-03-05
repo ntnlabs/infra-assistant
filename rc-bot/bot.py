@@ -247,13 +247,11 @@ def get_infrastructure_summary() -> dict:
         response.raise_for_status()
         data = response.json()
 
-        summary = data.get("summary", {})
+        # Note: Proxy returns flat structure, not nested "summary"
         result = f"""Infrastructure Summary:
-- Total Hosts: {summary.get('total_hosts', 0)}
-- Hosts Up: {summary.get('hosts_up', 0)}
-- Hosts Down: {summary.get('hosts_down', 0)}
-- Active Problems: {summary.get('active_problems', 0)}
-- Active Triggers: {summary.get('active_triggers', 0)}"""
+- Total Problems: {data.get('total_problems', 0)}
+- By Severity: {', '.join(f"{k}={v}" for k, v in data.get('by_severity', {}).items())}
+- High Severity Issues: {len(data.get('high_severity_problems', []))}"""
 
         return {"success": True, "data": result}
 

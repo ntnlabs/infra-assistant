@@ -514,7 +514,7 @@ def acknowledge_event():
             if suppress_until:
                 params["suppress_until"] = int(suppress_until)
 
-        result = zabbix.api_call("event.acknowledge", params)
+        result = zabbix._call("event.acknowledge", params)
 
         if result:
             return jsonify({
