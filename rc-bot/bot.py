@@ -160,11 +160,21 @@ You have access to these tools - use them proactively when relevant:
 ## Important Behaviors
 
 - **Always check tools first** before saying you don't know about current status
-- **Be honest** if you don't have access to information - don't make up data
+- **NEVER make up data** - If a tool fails or returns an error, REPORT THE ERROR, don't invent alert IDs, hostnames, or data
+- **Report tool failures clearly** - If Zabbix is down or a command fails, tell the user "I couldn't connect to Zabbix" or "The command failed", don't pretend you have data
+- **Be honest** if you don't have access to information - say "I don't have that information" instead of guessing
 - **Ask clarifying questions** if a request is ambiguous
 - **Acknowledge limitations** - you can monitor and recommend, but humans make final decisions
 - **Maintain context** - remember what was discussed earlier in the conversation
 - **Be proactive** - if you see critical alerts, mention them even if not directly asked
+
+## CRITICAL: Never Hallucinate
+
+If a tool returns an error or no data:
+- ❌ DON'T: Make up alert IDs like "12345" or "67890"
+- ❌ DON'T: Invent plausible-sounding hostnames or problems
+- ✅ DO: Say "I'm unable to connect to Zabbix right now" or "The command failed with error: [error message]"
+- ✅ DO: Suggest checking if the service is running or accessible
 
 ## Example Interactions
 
@@ -751,7 +761,7 @@ class RocketChatBot:
                         "messages": messages,
                         "stream": False,
                         "options": {
-                            "temperature": 0.7,
+                            "temperature": 0.3,  # Low temp = more factual, less creative/hallucination
                             "num_ctx": 4096
                         }
                     },
@@ -791,6 +801,11 @@ class RocketChatBot:
                             messages.append({"role": "assistant", "content": "Let me check the active alerts."})
                             messages.append({"role": "user", "content": f"Here are the active alerts:\n{tool_result['data']}\n\nPlease analyze and respond to the original question."})
                             tool_called = True
+                        else:
+                            # Tool failed - make it VERY clear to LLM
+                            messages.append({"role": "assistant", "content": "I'll check the active alerts."})
+                            messages.append({"role": "user", "content": f"❌ ERROR: Could not get alerts from Zabbix. Error: {tool_result.get('error', 'Unknown error')}\n\nIMPORTANT: Tell the user you cannot access Zabbix right now. DO NOT make up alert data or IDs."})
+                            tool_called = True
 
                 if "get_infrastructure_summary" in content.lower() or "infrastructure status" in content.lower() or "summary" in content.lower():
                     if not tool_called and iteration == 1:
@@ -799,6 +814,11 @@ class RocketChatBot:
                         if tool_result["success"]:
                             messages.append({"role": "assistant", "content": "Let me check the infrastructure summary."})
                             messages.append({"role": "user", "content": f"Here is the infrastructure summary:\n{tool_result['data']}\n\nPlease analyze and respond to the original question."})
+                            tool_called = True
+                        else:
+                            # Tool failed - make it VERY clear to LLM
+                            messages.append({"role": "assistant", "content": "I'll check the infrastructure summary."})
+                            messages.append({"role": "user", "content": f"❌ ERROR: Could not get infrastructure summary from Zabbix. Error: {tool_result.get('error', 'Unknown error')}\n\nIMPORTANT: Tell the user you cannot access Zabbix right now. DO NOT make up host counts or status data."})
                             tool_called = True
 
                 # Check for alert management (acknowledge, close, change severity, suppress)
