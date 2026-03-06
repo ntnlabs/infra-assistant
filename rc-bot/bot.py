@@ -501,79 +501,110 @@ def run_command(host: str, command: str) -> dict:
 
 
 # Tool definitions for LLM
-TOOLS = [
+# Tool definitions in Ollama format (OpenAI-compatible)
+OLLAMA_TOOLS = [
     {
-        "name": "get_active_alerts",
-        "description": "Get current active alerts from Zabbix monitoring system. Use this when users ask about problems, alerts, or issues.",
-        "parameters": {
-            "min_severity": {
-                "type": "integer",
-                "description": "Minimum severity level (0=Not classified, 1=Info, 2=Warning, 3=Average, 4=High, 5=Disaster). Default: 3",
-                "default": 3
-            },
-            "limit": {
-                "type": "integer",
-                "description": "Maximum number of alerts to return. Default: 25",
-                "default": 25
+        "type": "function",
+        "function": {
+            "name": "get_active_alerts",
+            "description": "Get current active alerts from Zabbix monitoring system. Use this when users ask about problems, alerts, or issues.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "min_severity": {
+                        "type": "integer",
+                        "description": "Minimum severity level (0=Not classified, 1=Info, 2=Warning, 3=Average, 4=High, 5=Disaster)",
+                        "default": 3
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of alerts to return",
+                        "default": 25
+                    }
+                },
+                "required": []
             }
         }
     },
     {
-        "name": "get_infrastructure_summary",
-        "description": "Get overview of infrastructure status including host counts and active problems. Use this for general status questions.",
-        "parameters": {}
-    },
-    {
-        "name": "manage_alert",
-        "description": "Manage Zabbix alerts - acknowledge, close, change severity, or suppress. Use when users ask to manage alerts. Requires event ID from active alerts.",
-        "parameters": {
-            "event_id": {
-                "type": "string",
-                "description": "Event ID from Zabbix (get from active alerts first)",
-                "required": True
-            },
-            "action": {
-                "type": "string",
-                "description": "Action: 'acknowledge', 'close', 'change_severity', 'suppress'. Default: acknowledge",
-                "default": "acknowledge"
-            },
-            "message": {
-                "type": "string",
-                "description": "Optional comment/message to add",
-                "default": ""
-            },
-            "severity": {
-                "type": "integer",
-                "description": "New severity for change_severity action (0-5: Not classified, Info, Warning, Average, High, Disaster)",
-                "default": None
-            },
-            "suppress_hours": {
-                "type": "integer",
-                "description": "Hours to suppress for suppress action (postpone notifications)",
-                "default": None
+        "type": "function",
+        "function": {
+            "name": "get_infrastructure_summary",
+            "description": "Get overview of infrastructure status including host counts and active problems. Use this for general status questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
             }
         }
     },
     {
-        "name": "run_command",
-        "description": "Run diagnostic command on remote host via SSH. Use when users ask to check disk, memory, uptime, or run commands on servers.",
-        "parameters": {
-            "host": {
-                "type": "string",
-                "description": "Hostname or IP address (must be in allowed list)",
-                "required": True
-            },
-            "command": {
-                "type": "string",
-                "description": "Command to run: df, disk, memory, uptime, load, cpu, processes, network, listening",
-                "required": True
+        "type": "function",
+        "function": {
+            "name": "manage_alert",
+            "description": "Manage Zabbix alerts - acknowledge, close, change severity, or suppress. Use when users ask to manage alerts. Requires event ID from active alerts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "Event ID from Zabbix (get from active alerts first)"
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "Action: 'acknowledge', 'close', 'change_severity', 'suppress'",
+                        "enum": ["acknowledge", "close", "change_severity", "suppress"],
+                        "default": "acknowledge"
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Optional comment/message to add"
+                    },
+                    "severity": {
+                        "type": "integer",
+                        "description": "New severity for change_severity action (0-5)"
+                    },
+                    "suppress_hours": {
+                        "type": "integer",
+                        "description": "Hours to suppress for suppress action"
+                    }
+                },
+                "required": ["event_id"]
             }
         }
     },
     {
-        "name": "get_help",
-        "description": "Show help information about available commands, allowed hosts, and how to use Bob. Use when users ask for help or list of commands.",
-        "parameters": {}
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": "Run diagnostic command on remote host via SSH. Use when users ask to check disk, memory, uptime, load, CPU, or run commands on servers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "host": {
+                        "type": "string",
+                        "description": "Hostname or IP address (must be in allowed list)"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command to run: df, disk, memory, uptime, load, cpu, processes, network, listening"
+                    }
+                },
+                "required": ["host", "command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_help",
+            "description": "Show help information about available commands and how to use Bob. Use when users ask for help.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     }
 ]
 
@@ -769,13 +800,14 @@ class RocketChatBot:
                 iteration += 1
                 logger.info(f"Ollama iteration {iteration}/{max_iterations}")
 
-                # Call Ollama
+                # Call Ollama with native tool calling
                 start_time = time.time()
                 response = requests.post(
                     f"{OLLAMA_URL}/api/chat",
                     json={
                         "model": OLLAMA_MODEL,
                         "messages": messages,
+                        "tools": OLLAMA_TOOLS,  # Enable native tool calling
                         "stream": False,
                         "keep_alive": -1,  # Keep model loaded in VRAM indefinitely
                         "options": {
@@ -797,136 +829,88 @@ class RocketChatBot:
 
                 assistant_message = data.get("message", {})
                 content = assistant_message.get("content", "").strip()
+                tool_calls = assistant_message.get("tool_calls", [])
 
-                # Check if response contains a tool call
-                # Simple pattern: if message mentions using a tool, try to extract it
-                tool_called = False
+                # Check if Ollama wants to call tools (native tool calling)
+                if tool_calls:
+                    logger.info(f"Ollama requested {len(tool_calls)} tool call(s)")
 
-                # Check for help request
-                if any(word in text.lower() for word in ["help", "commands", "what can you do", "how do i", "list commands"]):
-                    if not tool_called and iteration == 1:
-                        logger.info("Detected help request")
-                        tool_result = get_help()
-                        if tool_result["success"]:
-                            messages.append({"role": "assistant", "content": "Let me show you what I can do."})
-                            messages.append({"role": "user", "content": f"{tool_result['data']}\n\nPlease present this help information to the user in a friendly way."})
-                            tool_called = True
+                    # Add assistant message with tool_calls to conversation
+                    messages.append(assistant_message)
 
-                # Look for simple tool call pattern in response
-                if "get_active_alerts" in content.lower() or "active alerts" in content.lower() or "problems" in content.lower():
-                    if not tool_called and iteration == 1:  # Only on first iteration
-                        logger.info("Detected need for active alerts")
-                        tool_result = get_active_alerts()
-                        if tool_result["success"]:
-                            # Add tool result to messages and retry
-                            messages.append({"role": "assistant", "content": "Let me check the active alerts."})
-                            messages.append({"role": "user", "content": f"Here are the active alerts:\n{tool_result['data']}\n\nPlease analyze and respond to the original question."})
-                            tool_called = True
-                        else:
-                            # Tool failed - make it VERY clear to LLM
-                            messages.append({"role": "assistant", "content": "I'll check the active alerts."})
-                            messages.append({"role": "user", "content": f"❌ ERROR: Could not get alerts from Zabbix. Error: {tool_result.get('error', 'Unknown error')}\n\nIMPORTANT: Tell the user you cannot access Zabbix right now. DO NOT make up alert data or IDs."})
-                            tool_called = True
+                    # Execute each tool call
+                    for tool_call in tool_calls:
+                        function_name = tool_call.get("function", {}).get("name")
+                        function_args = tool_call.get("function", {}).get("arguments", {})
 
-                if "get_infrastructure_summary" in content.lower() or "infrastructure status" in content.lower() or "summary" in content.lower():
-                    if not tool_called and iteration == 1:
-                        logger.info("Detected need for infrastructure summary")
-                        tool_result = get_infrastructure_summary()
-                        if tool_result["success"]:
-                            messages.append({"role": "assistant", "content": "Let me check the infrastructure summary."})
-                            messages.append({"role": "user", "content": f"Here is the infrastructure summary:\n{tool_result['data']}\n\nPlease analyze and respond to the original question."})
-                            tool_called = True
-                        else:
-                            # Tool failed - make it VERY clear to LLM
-                            messages.append({"role": "assistant", "content": "I'll check the infrastructure summary."})
-                            messages.append({"role": "user", "content": f"❌ ERROR: Could not get infrastructure summary from Zabbix. Error: {tool_result.get('error', 'Unknown error')}\n\nIMPORTANT: Tell the user you cannot access Zabbix right now. DO NOT make up host counts or status data."})
-                            tool_called = True
+                        logger.info(f"Executing tool: {function_name} with args: {function_args}")
 
-                # Check for alert management (acknowledge, close, change severity, suppress)
-                if any(word in text.lower() for word in ["acknowledge", "ack", "close alert", "close event", "change severity", "suppress", "postpone", "snooze"]):
-                    if not tool_called and iteration == 1:
-                        # Try to extract event ID from user message
-                        import re
-                        event_match = re.search(r'(?:event|alert)\s+(?:id\s+)?(\d+)', text.lower())
-                        if event_match:
-                            event_id = event_match.group(1)
+                        # Get the tool function
+                        tool_func = TOOL_FUNCTIONS.get(function_name)
 
-                            # Determine action
-                            action = "acknowledge"  # default
-                            severity = None
-                            suppress_hours = None
-
-                            if "close" in text.lower():
-                                action = "close"
-                            elif any(word in text.lower() for word in ["change severity", "set severity"]):
-                                action = "change_severity"
-                                # Try to extract severity
-                                sev_match = re.search(r'severity\s+(?:to\s+)?(\d+|info|warning|average|high|disaster)', text.lower())
-                                if sev_match:
-                                    sev_str = sev_match.group(1)
-                                    severity_map = {"info": 1, "information": 1, "warning": 2, "average": 3, "high": 4, "disaster": 5}
-                                    severity = severity_map.get(sev_str, int(sev_str) if sev_str.isdigit() else 3)
-                            elif any(word in text.lower() for word in ["suppress", "postpone", "snooze"]):
-                                action = "suppress"
-                                # Try to extract hours
-                                hours_match = re.search(r'(\d+)\s*(?:hour|hr)', text.lower())
-                                if hours_match:
-                                    suppress_hours = int(hours_match.group(1))
+                        if tool_func:
+                            try:
+                                # Call the tool with unpacked arguments
+                                if function_name == "get_active_alerts":
+                                    tool_result = tool_func(
+                                        min_severity=function_args.get("min_severity", 3),
+                                        limit=function_args.get("limit", 25)
+                                    )
+                                elif function_name == "get_infrastructure_summary":
+                                    tool_result = tool_func()
+                                elif function_name == "manage_alert":
+                                    tool_result = tool_func(
+                                        event_id=function_args.get("event_id"),
+                                        action=function_args.get("action", "acknowledge"),
+                                        message=function_args.get("message", ""),
+                                        severity=function_args.get("severity"),
+                                        suppress_hours=function_args.get("suppress_hours")
+                                    )
+                                elif function_name == "run_command":
+                                    tool_result = tool_func(
+                                        host=function_args.get("host"),
+                                        command=function_args.get("command")
+                                    )
+                                elif function_name == "get_help":
+                                    tool_result = tool_func()
                                 else:
-                                    suppress_hours = 2  # Default 2 hours
+                                    tool_result = {"success": False, "error": f"Unknown tool: {function_name}"}
 
-                            # Extract message if present
-                            msg_match = re.search(r'(?:message|comment|reason):\s*["\']?([^"\']+)["\']?', text, re.IGNORECASE)
-                            message = msg_match.group(1).strip() if msg_match else ""
-
-                            logger.info(f"Managing alert {event_id}: {action}")
-                            tool_result = manage_alert(event_id, action, message, severity, suppress_hours)
-                            if tool_result["success"]:
-                                messages.append({"role": "assistant", "content": f"I'll {action.replace('_', ' ')} event {event_id}."})
-                                messages.append({"role": "user", "content": f"Result:\n{tool_result['data']}\n\nPlease confirm to the user."})
-                                tool_called = True
-
-                # Check for SSH command execution
-                if any(word in text.lower() for word in ["check disk", "disk space", "check memory", "check load", "load on", "uptime on", "check cpu", "check process", "run", "execute", "df", "free -"]):
-                    if not tool_called and iteration == 1:
-                        # Try to extract host and command
-                        import re
-                        # Look for "on hostname" pattern
-                        host_match = re.search(r'on\s+([a-zA-Z0-9\-_.]+)', text, re.IGNORECASE)
-
-                        if host_match:
-                            host = host_match.group(1)
-
-                            # Determine command from keywords
-                            command = None
-                            if any(word in text.lower() for word in ["disk", "df", "space"]):
-                                command = "df"
-                            elif any(word in text.lower() for word in ["memory", "ram", "free"]):
-                                command = "memory"
-                            elif "uptime" in text.lower():
-                                command = "uptime"
-                            elif "load" in text.lower():
-                                command = "load"
-                            elif any(word in text.lower() for word in ["cpu", "processor"]):
-                                command = "cpu"
-                            elif "process" in text.lower():
-                                command = "processes"
-
-                            if command:
-                                logger.info(f"Running SSH command '{command}' on {host}")
-                                tool_result = run_command(host, command)
-                                if tool_result["success"]:
-                                    messages.append({"role": "assistant", "content": f"Let me check {command} on {host}."})
-                                    messages.append({"role": "user", "content": f"{tool_result['data']}\n\nPlease format and explain the output."})
-                                    tool_called = True
+                                # Add tool result to messages
+                                if tool_result.get("success"):
+                                    tool_message = {
+                                        "role": "tool",
+                                        "content": tool_result.get("data", "No data returned")
+                                    }
                                 else:
-                                    # If command failed, return error to user
-                                    messages.append({"role": "assistant", "content": f"I tried to check {command} on {host}."})
-                                    messages.append({"role": "user", "content": f"Error: {tool_result['error']}\n\nPlease explain to the user."})
-                                    tool_called = True
+                                    # Tool failed - make error very clear
+                                    tool_message = {
+                                        "role": "tool",
+                                        "content": f"❌ ERROR: {tool_result.get('error', 'Unknown error')}\n\nIMPORTANT: Tell the user the tool failed. DO NOT invent data."
+                                    }
 
-                # If no tool was called, we have our final answer
-                if not tool_called:
+                                messages.append(tool_message)
+                                logger.info(f"Tool {function_name} completed: {'success' if tool_result.get('success') else 'failed'}")
+
+                            except Exception as e:
+                                logger.error(f"Error executing tool {function_name}: {e}")
+                                messages.append({
+                                    "role": "tool",
+                                    "content": f"❌ ERROR: Tool execution failed: {str(e)}"
+                                })
+
+                        else:
+                            logger.error(f"Tool function not found: {function_name}")
+                            messages.append({
+                                "role": "tool",
+                                "content": f"❌ ERROR: Tool '{function_name}' not found"
+                            })
+
+                    # Continue loop to let Ollama process tool results
+                    continue
+
+                # No tool calls - this is the final answer
+                else:
                     # Update conversation history
                     self.update_conversation(room_id, user, text, content)
                     return content or "No response from assistant."
