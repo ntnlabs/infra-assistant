@@ -811,7 +811,7 @@ class RocketChatBot:
                         "stream": False,
                         "keep_alive": -1,  # Keep model loaded in VRAM indefinitely
                         "options": {
-                            "temperature": 0.3,  # Low temp = more factual, less creative/hallucination
+                            "temperature": 0.2,  # Low temp = more factual, less creative/hallucination
                             "num_ctx": 2048  # Smaller context = less confusion, less hallucination
                         }
                     },
