@@ -20,6 +20,7 @@ import re
 import os
 import sys
 import yaml
+import hmac
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -205,7 +206,8 @@ def check_auth():
 
     token = request.headers.get("Authorization", "").replace("Bearer ", "")
 
-    if token != API_TOKEN:
+    # Use timing-safe comparison to prevent timing attacks
+    if not hmac.compare_digest(token, API_TOKEN):
         client_ip = request.remote_addr
         logger.warning(f"Unauthorized request from {client_ip}")
         return jsonify({"error": "Unauthorized"}), 401

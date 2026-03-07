@@ -16,6 +16,7 @@ Endpoints:
 
 import os
 import sys
+import hmac
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -294,7 +295,8 @@ def require_auth(f):
             return jsonify({"error": "Service not configured (ZABBIX_PROXY_TOKEN missing)"}), 503
 
         token = request.headers.get("Authorization", "").replace("Bearer ", "")
-        if token != ZABBIX_PROXY_TOKEN:
+        # Use timing-safe comparison to prevent timing attacks
+        if not hmac.compare_digest(token, ZABBIX_PROXY_TOKEN):
             return jsonify({"error": "Unauthorized"}), 401
 
         return f(*args, **kwargs)

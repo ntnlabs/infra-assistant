@@ -315,6 +315,10 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", 
     Returns:
         dict with 'success' and 'data' or 'error'
     """
+    # Validate event_id format (must be numeric)
+    if not event_id or not re.fullmatch(r"\d+", str(event_id)):
+        return {"success": False, "error": "Invalid event_id format (must be numeric)"}
+
     try:
         payload = {
             "event_ids": [event_id],
