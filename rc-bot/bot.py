@@ -220,9 +220,18 @@ EXAMPLES OF CORRECT BEHAVIOR:
 When a tool returns data, YOU MUST present it to the user:
 - ❌ DON'T say "You can use the manage_alert tool" or describe HOW to use tools
 - ❌ DON'T summarize or paraphrase - show the actual data
+- ❌ DON'T say "Here's a summary" - SHOW THE COMPLETE DATA
+- ❌ DON'T truncate or condense long lists - users need ALL the data
 - ✅ DO present the full tool result data to the user
+- ✅ DO show complete JSON output when tools return JSON
+- ✅ DO copy the entire data block even if it's 50+ lines
 - ✅ DO format it clearly (use the data as-is or improve formatting)
 - ✅ DO add context or analysis AFTER presenting the data
+
+**ESPECIALLY FOR STRUCTURED DATA (JSON, lists, tables):**
+- If a tool returns 60 jobs, show ALL 60 jobs - do not summarize to "15 running, 45 pending"
+- If a tool returns JSON, copy the ENTIRE JSON output - users need the complete data
+- NEVER say "I can show you details if needed" - SHOW IT IMMEDIATELY
 
 Example:
 - User: "show me active alerts"
@@ -1285,7 +1294,7 @@ class RocketChatBot:
                                     # Prepend strong instruction to present the data
                                     tool_message = {
                                         "role": "tool",
-                                        "content": f"TOOL RESULT - PRESENT THIS DATA TO THE USER:\n\n{result_data}"
+                                        "content": f"TOOL RESULT - SHOW THIS COMPLETE DATA TO THE USER. DO NOT SUMMARIZE. Copy the entire JSON output below as-is:\n\n{result_data}"
                                     }
                                 else:
                                     # Tool failed - make error very clear
