@@ -50,6 +50,17 @@ DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 # Zabbix API endpoint
 ZABBIX_API = f"{ZABBIX_URL}/api_jsonrpc.php"
 
+# Zabbix severity levels
+SEVERITY_NAMES = ["Not classified", "Information", "Warning", "Average", "High", "Disaster"]
+
+def get_severity_name(severity_value) -> str:
+    """Safely get severity name with bounds checking."""
+    try:
+        sev = int(severity_value)
+        return SEVERITY_NAMES[sev] if 0 <= sev < len(SEVERITY_NAMES) else "Unknown"
+    except (ValueError, TypeError):
+        return "Unknown"
+
 # =============================================================================
 # Logging
 # =============================================================================
@@ -326,8 +337,12 @@ def get_problems():
     - limit: max results (default 100)
     """
     try:
-        severity = int(request.args.get("severity", 0))
-        limit = int(request.args.get("limit", 100))
+        # Validate and bound parameters
+        try:
+            severity = max(0, min(5, int(request.args.get("severity", 0))))
+            limit = max(1, min(1000, int(request.args.get("limit", 100))))
+        except ValueError:
+            return jsonify({"error": "Invalid numeric parameter"}), 400
 
         problems = zabbix.get_problems(severity_min=severity, limit=limit)
 
@@ -338,7 +353,7 @@ def get_problems():
             formatted.append({
                 "eventid": p.get("eventid"),
                 "severity": int(p.get("severity", 0)),
-                "severity_name": ["Not classified", "Information", "Warning", "Average", "High", "Disaster"][int(p.get("severity", 0))],
+                "severity_name": get_severity_name(p.get("severity", 0)),
                 "name": p.get("name"),
                 "host": hosts[0].get("host") if hosts else "Unknown",
                 "hostname": hosts[0].get("name") if hosts else "Unknown",
@@ -405,7 +420,7 @@ def get_host_problems(hostname: str):
             formatted.append({
                 "eventid": p.get("eventid"),
                 "severity": int(p.get("severity", 0)),
-                "severity_name": ["Not classified", "Information", "Warning", "Average", "High", "Disaster"][int(p.get("severity", 0))],
+                "severity_name": get_severity_name(p.get("severity", 0)),
                 "name": p.get("name"),
                 "acknowledged": p.get("acknowledged") == "1",
                 "time": datetime.fromtimestamp(int(p.get("clock", 0))).isoformat()
@@ -444,7 +459,7 @@ def get_triggers():
                 "triggerid": t.get("triggerid"),
                 "description": t.get("description"),
                 "priority": int(t.get("priority", 0)),
-                "priority_name": ["Not classified", "Information", "Warning", "Average", "High", "Disaster"][int(t.get("priority", 0))],
+                "priority_name": get_severity_name(t.get("priority", 0)),
                 "status": "problem" if t.get("value") == "1" else "ok",
                 "host": hosts[0].get("host") if hosts else "Unknown",
                 "last_change": datetime.fromtimestamp(int(t.get("lastchange", 0))).isoformat()
@@ -492,7 +507,7 @@ def get_summary():
             formatted_high.append({
                 "name": p.get("name"),
                 "host": hosts[0].get("host") if hosts else "Unknown",
-                "severity": ["Not classified", "Information", "Warning", "Average", "High", "Disaster"][int(p.get("severity", 0))],
+                "severity": get_severity_name(p.get("severity", 0)),
                 "time": datetime.fromtimestamp(int(p.get("clock", 0))).isoformat()
             })
 

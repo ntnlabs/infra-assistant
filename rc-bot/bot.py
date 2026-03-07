@@ -91,6 +91,7 @@ logger = logging.getLogger(__name__)
 
 # Conversation tracking: "room_id:user" -> {"messages": list, "last_activity": datetime}
 conversations: dict = {}
+MAX_CONVERSATIONS = 500  # Prevent unbounded memory growth
 
 # Track processed message IDs to avoid duplicates
 processed_messages: set = set()
@@ -263,7 +264,7 @@ def get_active_alerts(min_severity: int = 3, limit: int = 25) -> dict:
         result = f"Found {len(problems)} active alerts:\n\n"
         for p in problems[:limit]:
             severity = p.get("severity", 0)
-            severity_names = ["Not classified", "Info", "Warning", "Average", "High", "Disaster"]
+            severity_names = ["Not classified", "Information", "Warning", "Average", "High", "Disaster"]
             sev_name = severity_names[severity] if 0 <= severity <= 5 else "Unknown"
             result += f"[{sev_name}] {p.get('name', 'Unknown')} on {p.get('hostname', 'Unknown')}\n"
 
@@ -350,7 +351,7 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", 
 
         if data.get("success"):
             if action == "change_severity":
-                severity_names = ["Not classified", "Info", "Warning", "Average", "High", "Disaster"]
+                severity_names = ["Not classified", "Information", "Warning", "Average", "High", "Disaster"]
                 sev_name = severity_names[severity] if 0 <= severity <= 5 else str(severity)
                 result = f"✅ Changed severity of alert {event_id} to {sev_name}"
             elif action == "suppress":
@@ -957,6 +958,12 @@ class RocketChatBot:
         # Keep only last 20 messages (10 exchanges)
         if len(conversations[conv_key]["messages"]) > 20:
             conversations[conv_key]["messages"] = conversations[conv_key]["messages"][-20:]
+
+        # Evict oldest conversation if limit exceeded (LRU)
+        if len(conversations) > MAX_CONVERSATIONS:
+            oldest_key = min(conversations.keys(), key=lambda k: conversations[k]["last_activity"])
+            logger.info(f"Evicting oldest conversation: {oldest_key}")
+            del conversations[oldest_key]
 
     def call_ollama(self, text: str, room_id: str, user: str) -> str:
         """Send message to Ollama and get response with tool support."""
