@@ -1180,7 +1180,7 @@ class RocketChatBot:
                             "num_ctx": OLLAMA_NUM_CTX  # Context window size (tokens)
                         }
                     },
-                    timeout=120
+                    timeout=180
                 )
 
                 if response.status_code != 200:
