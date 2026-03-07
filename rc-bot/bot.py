@@ -989,6 +989,12 @@ class RocketChatBot:
                 iteration += 1
                 logger.info(f"Ollama iteration {iteration}/{max_iterations}")
 
+                # Debug: Log messages being sent to Ollama
+                logger.debug(f"Messages count: {len(messages)}")
+                if iteration > 1:
+                    logger.debug(f"Last message role: {messages[-1].get('role')}")
+                    logger.debug(f"Last message content length: {len(str(messages[-1].get('content', '')))} chars")
+
                 # Call Ollama with native tool calling
                 start_time = time.time()
                 response = requests.post(
