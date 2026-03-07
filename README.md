@@ -9,6 +9,7 @@ Simple, customizable bot with direct LLM integration - no complex frameworks.
 - Conversational interface via Rocket.Chat (channels + DMs)
 - Built-in tools: Zabbix monitoring, infrastructure status
 - Direct Ollama integration - simple and fast
+- Optional Slurm node management via restricted wrapper on Slurm master
 - Privacy-first: runs entirely on your infrastructure
 - GPU isolation (locks Ollama to GPU1)
 - Easy to customize - tools are just Python functions

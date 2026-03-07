@@ -9,6 +9,8 @@ Configuration via environment variables (or .env file):
 - RC_CHANNELS, RC_ALLOWED_USERS, RC_PREFIX
 - OLLAMA_URL, OLLAMA_MODEL
 - ZABBIX_PROXY_URL, ZABBIX_PROXY_TOKEN
+- SSH_PROXY_URL, SSH_PROXY_TOKEN
+- SLURM_MASTER_HOST, SLURM_WRAPPER_COMMAND
 - POLL_INTERVAL, CONVERSATION_TIMEOUT, DEBUG
 
 Usage:
@@ -16,6 +18,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import time
 import logging
@@ -59,9 +62,15 @@ ZABBIX_PROXY_TOKEN = os.environ.get("ZABBIX_PROXY_TOKEN", "")
 SSH_PROXY_URL = os.environ.get("SSH_PROXY_URL", "http://localhost:5001")
 SSH_PROXY_TOKEN = os.environ.get("SSH_PROXY_TOKEN", "")
 
+# Slurm (optional, via ssh-proxy to Slurm master wrapper)
+SLURM_MASTER_HOST = os.environ.get("SLURM_MASTER_HOST", "").strip()
+SLURM_WRAPPER_COMMAND = os.environ.get("SLURM_WRAPPER_COMMAND", "sudo -n /usr/local/bin/bob-slurm").strip() or "sudo -n /usr/local/bin/bob-slurm"
+SLURM_DEFAULT_PARTITION = os.environ.get("SLURM_DEFAULT_PARTITION", "").strip()
+
 # Settings
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "2"))
 CONVERSATION_TIMEOUT = int(os.environ.get("CONVERSATION_TIMEOUT", "3600"))
+DM_REFRESH_INTERVAL = int(os.environ.get("DM_REFRESH_INTERVAL", "60"))
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 
 # =============================================================================
@@ -128,6 +137,18 @@ You have access to these tools - use them proactively when relevant:
    - Requires: Hostname from allowed list
    - Returns: Command output from the remote host
 
+5. **get_slurm_nodes** - Get Slurm cluster/node summary from Slurm master
+   - Use when: Users ask about node availability, idle/allocated/drained nodes, partition health
+   - Optional: Partition filter
+
+6. **manage_slurm_node** - Check, drain, or resume a Slurm node (via audited wrapper)
+   - Actions:
+     - check: Get status for one node
+     - drain: Put node into DRAIN state (requires reason and explicit confirmation)
+     - resume: Resume a drained node (requires explicit confirmation)
+   - Safety: Mutating actions require `confirm=true`
+   - Requires: Node name
+
 ## Communication Guidelines
 
 **Tone and Style:**
@@ -184,6 +205,7 @@ EXAMPLES OF CORRECT BEHAVIOR:
 - **Always check tools first** before saying you don't know about current status
 - **Report tool failures clearly** - If Zabbix is down or a command fails, tell the user explicitly
 - **Ask clarifying questions** if a request is ambiguous
+- **Require explicit confirmation** for mutating Slurm operations (drain/resume)
 - **Acknowledge limitations** - you can monitor and recommend, but humans make final decisions
 - **Maintain context** - remember what was discussed earlier in the conversation
 - **Be proactive** - if you see critical alerts, mention them even if not directly asked
@@ -392,6 +414,17 @@ Allowed hosts and commands are configured in:
 
 """
 
+    help_text += """### Slurm Commands
+- **Slurm summary**: "@bob show slurm nodes" or "@bob slurm summary"
+- **Slurm node status**: "@bob check slurm node gpu001"
+- **Drain node**: "@bob drain slurm node gpu001 reason maintenance ticket-123 confirm"
+- **Resume node**: "@bob resume slurm node gpu001 confirm"
+
+Safety:
+- Drain/resume require explicit confirmation (`confirm=true` in tool call)
+- Slurm actions run through a restricted wrapper on the Slurm master
+"""
+
     help_text += """
 ## Usage Tips
 - Mention @bob anywhere in your message (doesn't have to be at start)
@@ -458,21 +491,25 @@ def run_command(host: str, command: str) -> dict:
     # Map shorthand to actual command
     actual_command = COMMAND_MAP.get(command.lower(), command)
 
+    proxy_result = _execute_via_ssh_proxy(host=host, command=actual_command, timeout=60)
+    if not proxy_result.get("success"):
+        return proxy_result
+
+    return {"success": True, "data": f"Output from {host}:\n```\n{proxy_result.get('output', '')}\n```"}
+
+
+def _execute_via_ssh_proxy(host: str, command: str, timeout: int = 60) -> dict:
+    """Execute one command through ssh-proxy and return raw output/error."""
     if not SSH_PROXY_URL:
         return {"success": False, "error": "SSH_PROXY_URL not configured"}
 
     try:
-        logger.info(f"Requesting ssh-proxy to run '{actual_command}' on {host}")
-
-        # Send request to ssh-proxy (independent validator)
+        logger.info(f"Requesting ssh-proxy to run '{command}' on {host}")
         response = requests.post(
             f"{SSH_PROXY_URL}/execute",
             headers={"Authorization": f"Bearer {SSH_PROXY_TOKEN}"},
-            json={
-                "host": host,
-                "command": actual_command
-            },
-            timeout=60
+            json={"host": host, "command": command},
+            timeout=timeout
         )
 
         if response.status_code == 401:
@@ -486,18 +523,85 @@ def run_command(host: str, command: str) -> dict:
         data = response.json()
 
         if data.get("success"):
-            output = data.get("output", "")
-            return {"success": True, "data": f"Output from {host}:\n```\n{output}\n```"}
-        else:
-            return {"success": False, "error": data.get("error", "Unknown error from ssh-proxy")}
+            return {"success": True, "output": data.get("output", ""), "description": data.get("description", "")}
+
+        return {"success": False, "error": data.get("output") or data.get("error", "Unknown error from ssh-proxy")}
 
     except requests.exceptions.Timeout:
-        return {"success": False, "error": f"SSH Proxy request timed out"}
+        return {"success": False, "error": "SSH Proxy request timed out"}
     except requests.exceptions.ConnectionError:
         return {"success": False, "error": "Cannot connect to SSH Proxy service (is it running?)"}
     except Exception as e:
         logger.error(f"Error calling SSH Proxy: {e}")
         return {"success": False, "error": str(e)}
+
+
+def get_slurm_nodes(partition: str = "") -> dict:
+    """Get Slurm node summary from Slurm master via wrapper script."""
+    if not SLURM_MASTER_HOST:
+        return {"success": False, "error": "SLURM_MASTER_HOST not configured"}
+
+    part = (partition or SLURM_DEFAULT_PARTITION).strip()
+    if part and not re.fullmatch(r"[A-Za-z0-9_.-]+", part):
+        return {"success": False, "error": "Invalid partition name format"}
+
+    cmd = f"{SLURM_WRAPPER_COMMAND} summary"
+    if part:
+        cmd += f" --partition {part}"
+
+    proxy_result = _execute_via_ssh_proxy(host=SLURM_MASTER_HOST, command=cmd, timeout=60)
+    if not proxy_result.get("success"):
+        return proxy_result
+
+    output = proxy_result.get("output", "").strip()
+    return {"success": True, "data": f"Slurm summary from {SLURM_MASTER_HOST}:\n```json\n{output}\n```"}
+
+
+def manage_slurm_node(action: str, node: str, reason: str = "", confirm: bool = False) -> dict:
+    """Check, drain, or resume a Slurm node using the slurm wrapper."""
+    if not SLURM_MASTER_HOST:
+        return {"success": False, "error": "SLURM_MASTER_HOST not configured"}
+
+    action_normalized = (action or "").strip().lower()
+    if action_normalized not in {"check", "drain", "resume"}:
+        return {"success": False, "error": "Invalid action. Use: check, drain, resume"}
+
+    if isinstance(confirm, str):
+        confirm = confirm.strip().lower() in {"1", "true", "yes", "confirm"}
+    else:
+        confirm = bool(confirm)
+
+    node_name = (node or "").strip()
+    if not node_name:
+        return {"success": False, "error": "Node is required"}
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", node_name):
+        return {"success": False, "error": "Invalid node name format"}
+
+    # Mutating actions require explicit confirmation.
+    if action_normalized in {"drain", "resume"} and not confirm:
+        return {"success": False, "error": f"Action '{action_normalized}' requires explicit confirmation (confirm=true)"}
+
+    if action_normalized == "check":
+        cmd = f"{SLURM_WRAPPER_COMMAND} node-status --node {node_name}"
+    elif action_normalized == "resume":
+        cmd = f"{SLURM_WRAPPER_COMMAND} resume --node {node_name}"
+    else:
+        reason_text = (reason or "").strip()
+        if not reason_text:
+            return {"success": False, "error": "Drain requires a reason"}
+        if len(reason_text) > 120:
+            return {"success": False, "error": "Reason too long (max 120 chars)"}
+        if not re.fullmatch(r"[A-Za-z0-9 ._:@/#-]+", reason_text):
+            return {"success": False, "error": "Reason contains unsupported characters"}
+        # Always quote reason for pattern matching (validated above to prevent injection)
+        cmd = f"{SLURM_WRAPPER_COMMAND} drain --node {node_name} --reason '{reason_text}'"
+
+    proxy_result = _execute_via_ssh_proxy(host=SLURM_MASTER_HOST, command=cmd, timeout=90)
+    if not proxy_result.get("success"):
+        return proxy_result
+
+    output = proxy_result.get("output", "").strip()
+    return {"success": True, "data": f"Slurm {action_normalized} result for {node_name}:\n```json\n{output}\n```"}
 
 
 # Tool definitions for LLM
@@ -597,6 +701,54 @@ OLLAMA_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_slurm_nodes",
+            "description": "Get Slurm node/cluster summary from Slurm master. Use this for Slurm availability/status questions.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "partition": {
+                        "type": "string",
+                        "description": "Optional Slurm partition name filter"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_slurm_node",
+            "description": "Check, drain, or resume a Slurm node. Drain/resume are mutating and require confirm=true.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["check", "drain", "resume"],
+                        "description": "Node management action"
+                    },
+                    "node": {
+                        "type": "string",
+                        "description": "Slurm node name"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Reason text for drain action"
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Must be true for drain/resume",
+                        "default": False
+                    }
+                },
+                "required": ["action", "node"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_help",
             "description": "Show help information about available commands and how to use Bob. Use when users ask for help.",
             "parameters": {
@@ -614,6 +766,8 @@ TOOL_FUNCTIONS = {
     "get_infrastructure_summary": get_infrastructure_summary,
     "manage_alert": manage_alert,
     "run_command": run_command,
+    "get_slurm_nodes": get_slurm_nodes,
+    "manage_slurm_node": manage_slurm_node,
     "get_help": get_help
 }
 
@@ -629,6 +783,7 @@ class RocketChatBot:
         self.rc: Optional[RocketChat] = None
         self.room_ids: dict = {}  # channel_name -> room_id
         self.dm_room_ids: set = set()  # DM room IDs
+        self.last_dm_refresh: Optional[datetime] = None
         self.first_poll_done: set = set()  # Track rooms that have been polled once
 
     def connect(self) -> bool:
@@ -682,23 +837,42 @@ class RocketChatBot:
         return True
 
     def setup_dms(self):
-        """Get DM room IDs."""
+        """Initial DM room discovery."""
+        self.refresh_dm_rooms(force=True)
+
+    def refresh_dm_rooms(self, force: bool = False):
+        """Refresh DM room list periodically so new DMs are discovered."""
+        if not force and DM_REFRESH_INTERVAL > 0 and self.last_dm_refresh:
+            elapsed = (datetime.now() - self.last_dm_refresh).total_seconds()
+            if elapsed < DM_REFRESH_INTERVAL:
+                return
+
         try:
-            # Get list of DM rooms
             result = self.rc.im_list()
             if result.ok:
                 ims = result.json().get("ims", [])
+                new_dm_room_ids: set = set()
+
                 for im in ims:
                     room_id = im.get("_id")
                     username = im.get("username", "unknown")
                     if room_id:
-                        self.dm_room_ids.add(room_id)
-                        logger.info(f"Monitoring DM with: {username}")
+                        new_dm_room_ids.add(room_id)
+                        if room_id not in self.dm_room_ids:
+                            logger.info(f"New DM discovered: {username} ({room_id})")
 
-                if self.dm_room_ids:
+                removed = self.dm_room_ids - new_dm_room_ids
+                if removed:
+                    logger.info(f"Removed {len(removed)} DM room(s) no longer visible")
+
+                self.dm_room_ids = new_dm_room_ids
+                self.last_dm_refresh = datetime.now()
+
+                if force and self.dm_room_ids:
                     logger.info(f"Monitoring {len(self.dm_room_ids)} DM conversations")
         except Exception as e:
-            logger.warning(f"Could not setup DMs: {e}")
+            logger.warning(f"Could not refresh DM rooms: {e}")
+            self.last_dm_refresh = datetime.now()
 
     def should_respond(self, message: dict, is_dm: bool = False) -> bool:
         """Check if bot should respond to this message."""
@@ -843,6 +1017,16 @@ class RocketChatBot:
                         function_name = tool_call.get("function", {}).get("name")
                         function_args = tool_call.get("function", {}).get("arguments", {})
 
+                        # Some providers return arguments as JSON string; normalize to dict.
+                        if isinstance(function_args, str):
+                            try:
+                                function_args = json_lib.loads(function_args)
+                            except Exception:
+                                logger.warning(f"Could not parse tool arguments for {function_name}: {function_args}")
+                                function_args = {}
+                        if not isinstance(function_args, dict):
+                            function_args = {}
+
                         logger.info(f"Executing tool: {function_name} with args: {function_args}")
 
                         # Get the tool function
@@ -870,6 +1054,17 @@ class RocketChatBot:
                                     tool_result = tool_func(
                                         host=function_args.get("host"),
                                         command=function_args.get("command")
+                                    )
+                                elif function_name == "get_slurm_nodes":
+                                    tool_result = tool_func(
+                                        partition=function_args.get("partition", "")
+                                    )
+                                elif function_name == "manage_slurm_node":
+                                    tool_result = tool_func(
+                                        action=function_args.get("action"),
+                                        node=function_args.get("node"),
+                                        reason=function_args.get("reason", ""),
+                                        confirm=function_args.get("confirm", False)
                                     )
                                 elif function_name == "get_help":
                                     tool_result = tool_func()
@@ -1064,6 +1259,7 @@ class RocketChatBot:
         while True:
             try:
                 self.poll_messages()
+                self.refresh_dm_rooms()
                 self.poll_dms()
                 reconnect_attempts = 0
 

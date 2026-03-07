@@ -8,6 +8,7 @@
 
 # Allowed target hosts
 # The "name" is what the agent uses to refer to them.
+# Security note: only include trusted internal IPs/hostnames that you control.
 hosts:
   # Example configuration:
   #

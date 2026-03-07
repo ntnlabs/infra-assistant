@@ -1,0 +1,9 @@
+# /etc/sudoers.d/bob-slurm
+#
+# Allow a dedicated automation user on the Slurm master to run only bob-slurm.
+# Replace "monitor" with the actual SSH user configured in ssh-proxy/hosts.yaml.
+
+Cmnd_Alias BOB_SLURM = /usr/local/bin/bob-slurm *
+monitor ALL=(root) NOPASSWD: BOB_SLURM
+
+Defaults!BOB_SLURM !requiretty

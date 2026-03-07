@@ -11,3 +11,6 @@ You can use this directory for:
 - Integration code for other systems
 
 This directory is intentionally kept separate from the main bot code for organization.
+
+Current integrations:
+- `slurm/` - restricted Slurm wrapper (`bob-slurm`) + sudoers example for node checks/drain/resume

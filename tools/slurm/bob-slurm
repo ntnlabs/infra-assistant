@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# bob-slurm: restricted Slurm wrapper for automation clients (e.g. Bob).
+# Intended to be invoked remotely via SSH + sudo from a controlled caller.
+
+set -euo pipefail
+
+MAX_REASON_LEN=120
+MAX_SAMPLE_NODES=50
+
+json_escape() {
+  local s="${1-}"
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  printf '%s' "$s"
+}
+
+emit_error() {
+  local code="$1"
+  local message="$2"
+  printf '{"ok":false,"error":"%s","code":%s}\n' "$(json_escape "$message")" "$code"
+  exit "$code"
+}
+
+require_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || emit_error 127 "Required command not found: $cmd"
+}
+
+valid_node() {
+  local node="$1"
+  [[ "$node" =~ ^[A-Za-z0-9_.:-]+$ ]]
+}
+
+valid_partition() {
+  local part="$1"
+  [[ "$part" =~ ^[A-Za-z0-9_.-]+$ ]]
+}
+
+valid_reason() {
+  local reason="$1"
+  [[ "$reason" =~ ^[A-Za-z0-9._:@/#\ -]+$ ]]
+}
+
+normalize_reason() {
+  local reason="$1"
+  reason="$(printf '%s' "$reason" | tr -s ' ' ' ')"
+  reason="${reason#"${reason%%[![:space:]]*}"}"
+  reason="${reason%"${reason##*[![:space:]]}"}"
+  printf '%s' "$reason"
+}
+
+summary_action() {
+  local partition="${1-}"
+  local -a sinfo_cmd
+
+  sinfo_cmd=(sinfo -h -N -o "%N|%t|%P")
+  if [[ -n "$partition" ]]; then
+    sinfo_cmd=(sinfo -p "$partition" -h -N -o "%N|%t|%P")
+  fi
+
+  local output
+  output="$("${sinfo_cmd[@]}" 2>/dev/null || true)"
+  [[ -n "$output" ]] || emit_error 4 "No Slurm nodes found (or query failed)"
+
+  local total=0 idle=0 alloc=0 mixed=0 down=0 drain=0 other=0
+  local sample_count=0
+  local sample_json=""
+
+  while IFS='|' read -r node state part; do
+    [[ -n "$node" ]] || continue
+    total=$((total + 1))
+
+    case "${state^^}" in
+      IDLE*) idle=$((idle + 1)) ;;
+      ALLOC*) alloc=$((alloc + 1)) ;;
+      MIX*) mixed=$((mixed + 1)) ;;
+      DRAIN*|DRAINING*) drain=$((drain + 1)) ;;
+      DOWN*|FAIL*|FUTR*|UNK*|INVAL*) down=$((down + 1)) ;;
+      *) other=$((other + 1)) ;;
+    esac
+
+    if (( sample_count < MAX_SAMPLE_NODES )); then
+      local item
+      item=$(printf '{"node":"%s","state":"%s","partition":"%s"}' \
+        "$(json_escape "$node")" \
+        "$(json_escape "$state")" \
+        "$(json_escape "$part")")
+      if [[ -n "$sample_json" ]]; then
+        sample_json="${sample_json},${item}"
+      else
+        sample_json="${item}"
+      fi
+      sample_count=$((sample_count + 1))
+    fi
+  done <<< "$output"
+
+  local part_name="all"
+  [[ -n "$partition" ]] && part_name="$partition"
+
+  printf '{"ok":true,"action":"summary","partition":"%s","counts":{"total":%d,"idle":%d,"alloc":%d,"mixed":%d,"drain":%d,"down":%d,"other":%d},"sample":[%s]}\n' \
+    "$(json_escape "$part_name")" \
+    "$total" "$idle" "$alloc" "$mixed" "$drain" "$down" "$other" "$sample_json"
+}
+
+node_status_action() {
+  local node="$1"
+  valid_node "$node" || emit_error 2 "Invalid node format"
+
+  local line
+  line="$(sinfo -h -N -n "$node" -o "%N|%t|%P" 2>/dev/null | head -n 1 || true)"
+  [[ -n "$line" ]] || emit_error 4 "Node not found: $node"
+
+  local node_name state partition
+  IFS='|' read -r node_name state partition <<< "$line"
+
+  local details
+  details="$(scontrol show node "$node" 2>/dev/null || true)"
+  local reason=""
+  if [[ -n "$details" ]]; then
+    reason="$(printf '%s\n' "$details" | tr ' ' '\n' | sed -n 's/^Reason=//p' | head -n 1)"
+  fi
+
+  printf '{"ok":true,"action":"node-status","node":"%s","state":"%s","partition":"%s","reason":"%s"}\n' \
+    "$(json_escape "$node_name")" \
+    "$(json_escape "$state")" \
+    "$(json_escape "$partition")" \
+    "$(json_escape "$reason")"
+}
+
+drain_action() {
+  local node="$1"
+  local reason="$2"
+
+  valid_node "$node" || emit_error 2 "Invalid node format"
+  reason="$(normalize_reason "$reason")"
+  [[ -n "$reason" ]] || emit_error 2 "Drain reason is required"
+  (( ${#reason} <= MAX_REASON_LEN )) || emit_error 2 "Drain reason too long (max ${MAX_REASON_LEN})"
+  valid_reason "$reason" || emit_error 2 "Drain reason contains unsupported characters"
+
+  if [[ "$EUID" -ne 0 ]]; then
+    emit_error 13 "Drain requires root privileges (configure sudoers for bob-slurm)"
+  fi
+
+  scontrol update "NodeName=${node}" State=DRAIN "Reason=${reason}" >/dev/null
+  node_status_action "$node"
+}
+
+resume_action() {
+  local node="$1"
+  valid_node "$node" || emit_error 2 "Invalid node format"
+
+  if [[ "$EUID" -ne 0 ]]; then
+    emit_error 13 "Resume requires root privileges (configure sudoers for bob-slurm)"
+  fi
+
+  scontrol update "NodeName=${node}" State=RESUME >/dev/null
+  node_status_action "$node"
+}
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  bob-slurm summary [--partition PARTITION]
+  bob-slurm node-status --node NODE
+  bob-slurm drain --node NODE --reason REASON
+  bob-slurm resume --node NODE
+USAGE
+}
+
+main() {
+  local action="${1-}"
+  [[ -n "$action" ]] || { usage; emit_error 2 "Missing action"; }
+  if [[ "$action" == "-h" || "$action" == "--help" || "$action" == "help" ]]; then
+    usage
+    exit 0
+  fi
+  shift || true
+
+  require_cmd sinfo
+  require_cmd scontrol
+  require_cmd sed
+  require_cmd tr
+
+  case "$action" in
+    summary)
+      local partition=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --partition)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing partition value"
+            partition="$1"
+            ;;
+          *)
+            emit_error 2 "Unknown argument for summary: $1"
+            ;;
+        esac
+        shift || true
+      done
+      if [[ -n "$partition" ]]; then
+        valid_partition "$partition" || emit_error 2 "Invalid partition format"
+      fi
+      summary_action "$partition"
+      ;;
+
+    node-status)
+      local node=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --node)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing node value"
+            node="$1"
+            ;;
+          *)
+            emit_error 2 "Unknown argument for node-status: $1"
+            ;;
+        esac
+        shift || true
+      done
+      [[ -n "$node" ]] || emit_error 2 "node-status requires --node"
+      node_status_action "$node"
+      ;;
+
+    drain)
+      local node=""
+      local reason=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --node)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing node value"
+            node="$1"
+            ;;
+          --reason)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing reason value"
+            reason="$1"
+            ;;
+          *)
+            emit_error 2 "Unknown argument for drain: $1"
+            ;;
+        esac
+        shift || true
+      done
+      [[ -n "$node" ]] || emit_error 2 "drain requires --node"
+      [[ -n "$reason" ]] || emit_error 2 "drain requires --reason"
+      drain_action "$node" "$reason"
+      ;;
+
+    resume)
+      local node=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --node)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing node value"
+            node="$1"
+            ;;
+          *)
+            emit_error 2 "Unknown argument for resume: $1"
+            ;;
+        esac
+        shift || true
+      done
+      [[ -n "$node" ]] || emit_error 2 "resume requires --node"
+      resume_action "$node"
+      ;;
+
+    *)
+      usage
+      emit_error 2 "Unknown action: $action"
+      ;;
+  esac
+}
+
+main "$@"

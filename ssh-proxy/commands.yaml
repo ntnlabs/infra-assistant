@@ -99,6 +99,24 @@ commands:
   - pattern: "^docker logs --tail [0-9]+ [a-zA-Z0-9_-]+$"
     description: "View container logs"
 
+  # === Slurm Control via Wrapper (recommended) ===
+  # Wrapper should be installed on Slurm controller/master host.
+  # See: tools/slurm/ for bob-slurm script and sudoers example.
+  - pattern: "^sudo -n /usr/local/bin/bob-slurm summary$"
+    description: "Slurm cluster summary"
+
+  - pattern: "^sudo -n /usr/local/bin/bob-slurm summary --partition [a-zA-Z0-9_.-]+$"
+    description: "Slurm summary for one partition"
+
+  - pattern: "^sudo -n /usr/local/bin/bob-slurm node-status --node [a-zA-Z0-9_.:-]+$"
+    description: "Slurm node status"
+
+  - pattern: "^sudo -n /usr/local/bin/bob-slurm drain --node [a-zA-Z0-9_.:-]+ --reason '[a-zA-Z0-9 ._:@/#-]{1,120}'$"
+    description: "Drain Slurm node with reason"
+
+  - pattern: "^sudo -n /usr/local/bin/bob-slurm resume --node [a-zA-Z0-9_.:-]+$"
+    description: "Resume Slurm node"
+
   # ============================================
   # SERVICE RESTARTS - Commented out by default
   # Uncomment when you trust the system
