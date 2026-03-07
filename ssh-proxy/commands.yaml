@@ -117,6 +117,22 @@ commands:
   - pattern: "^sudo -n /usr/local/bin/bob-slurm resume --node [a-zA-Z0-9_.:-]+$"
     description: "Resume Slurm node"
 
+  # Slurm via bob-slurm (without sudo, for root SSH access)
+  - pattern: "^/usr/local/bin/bob-slurm summary$"
+    description: "Slurm cluster summary (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm summary --partition [a-zA-Z0-9_.-]+$"
+    description: "Slurm summary for one partition (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm node-status --node [a-zA-Z0-9_.:-]+$"
+    description: "Slurm node status (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm drain --node [a-zA-Z0-9_.:-]+ --reason '[a-zA-Z0-9 ._:@/#-]{1,120}'$"
+    description: "Drain Slurm node with reason (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm resume --node [a-zA-Z0-9_.:-]+$"
+    description: "Resume Slurm node (root)"
+
   # ============================================
   # SERVICE RESTARTS - Commented out by default
   # Uncomment when you trust the system
