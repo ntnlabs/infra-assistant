@@ -215,6 +215,21 @@ EXAMPLES OF CORRECT BEHAVIOR:
 - **Maintain context** - remember what was discussed earlier in the conversation
 - **Be proactive** - if you see critical alerts, mention them even if not directly asked
 
+## CRITICAL: Present Tool Results Directly
+
+When a tool returns data, YOU MUST present it to the user:
+- ❌ DON'T say "You can use the manage_alert tool" or describe HOW to use tools
+- ❌ DON'T summarize or paraphrase - show the actual data
+- ✅ DO present the full tool result data to the user
+- ✅ DO format it clearly (use the data as-is or improve formatting)
+- ✅ DO add context or analysis AFTER presenting the data
+
+Example:
+- User: "show me active alerts"
+- Tool returns: "Found 2 alerts: [High] Database down on db01, [Warning] Disk space low on web02"
+- ✅ CORRECT: Present that exact data to the user
+- ❌ WRONG: "You can use manage_alert to handle these issues"
+
 ## CRITICAL: Never Hallucinate
 
 If a tool returns an error or no data:
@@ -1182,9 +1197,10 @@ class RocketChatBot:
         msg_type = "DM" if is_dm else "channel"
         logger.info(f"[{msg_type}] Message from {user}: {text[:100]}...")
 
-        # Check for context reset command
+        # Check for context reset command (check if ANY reset keyword is in the text)
         text_lower = text.lower().strip()
-        if text_lower in ["reset", "forget", "clear", "reset context", "forget conversation", "start over"]:
+        reset_keywords = ["reset", "forget", "clear", "reset context", "forget conversation", "start over"]
+        if any(keyword == text_lower or text_lower.endswith(f" {keyword}") or text_lower.startswith(f"{keyword} ") for keyword in reset_keywords):
             conv_key = f"{room_id}:{user}"
             if conv_key in conversations:
                 del conversations[conv_key]
