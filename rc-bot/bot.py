@@ -1112,9 +1112,10 @@ class RocketChatBot:
                                     result_data = tool_result.get("data", "No data returned")
                                     logger.debug(f"Tool result data length: {len(str(result_data))} chars")
                                     logger.debug(f"Tool result preview: {str(result_data)[:200]}...")
+                                    # Prepend strong instruction to present the data
                                     tool_message = {
                                         "role": "tool",
-                                        "content": result_data
+                                        "content": f"TOOL RESULT - PRESENT THIS DATA TO THE USER:\n\n{result_data}"
                                     }
                                 else:
                                     # Tool failed - make error very clear
