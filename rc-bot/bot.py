@@ -1174,7 +1174,7 @@ class RocketChatBot:
                         "messages": messages,
                         "tools": OLLAMA_TOOLS,  # Enable native tool calling
                         "stream": False,
-                        "keep_alive": -1,  # Keep model loaded in VRAM indefinitely
+                        "keep_alive": 300,  # Keep model loaded for 5 minutes after last use
                         "options": {
                             "temperature": OLLAMA_TEMPERATURE,  # Low temp = more factual, less creative/hallucination
                             "num_ctx": OLLAMA_NUM_CTX  # Context window size (tokens)
