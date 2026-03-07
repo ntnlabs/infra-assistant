@@ -212,6 +212,76 @@ job_action() {
     "$(json_escape "$output")"
 }
 
+history_action() {
+  local user="${1-}"
+  local state="${2-}"
+  local hours="${3:-24}"
+  local limit="${4:-50}"
+
+  # Validate inputs
+  if [[ -n "$user" ]]; then
+    [[ "$user" =~ ^[a-zA-Z0-9_-]+$ ]] || emit_error 2 "Invalid username format"
+  fi
+  if [[ -n "$state" ]]; then
+    [[ "$state" =~ ^[A-Z_]+$ ]] || emit_error 2 "Invalid state format"
+  fi
+  [[ "$hours" =~ ^[0-9]+$ ]] || emit_error 2 "Invalid hours format"
+  [[ "$limit" =~ ^[0-9]+$ ]] || emit_error 2 "Invalid limit format"
+  (( limit <= 500 )) || emit_error 2 "Limit too high (max 500)"
+
+  # Build sacct command
+  local -a sacct_cmd
+  local starttime
+  starttime=$(date -d "$hours hours ago" +%Y-%m-%dT%H:%M:%S 2>/dev/null || date -v-${hours}H +%Y-%m-%dT%H:%M:%S 2>/dev/null)
+  [[ -n "$starttime" ]] || emit_error 127 "Failed to calculate start time"
+
+  sacct_cmd=(sacct --starttime="$starttime" --format=JobID,JobName,User,State,ExitCode,Start,End,Elapsed,NodeList -P -n)
+
+  if [[ -n "$user" ]]; then
+    sacct_cmd+=(--user="$user")
+  fi
+  if [[ -n "$state" ]]; then
+    sacct_cmd+=(--state="$state")
+  fi
+
+  local output
+  output=$("${sacct_cmd[@]}" 2>/dev/null || true)
+  [[ -n "$output" ]] || emit_error 4 "No job history found"
+
+  # Process output into JSON array
+  local job_json=""
+  local count=0
+  while IFS='|' read -r jobid name user state exitcode start end elapsed nodelist; do
+    [[ -n "$jobid" ]] || continue
+    # Skip sub-jobs (e.g., 123.batch, 123.0)
+    [[ "$jobid" =~ \. ]] && continue
+
+    (( count >= limit )) && break
+    count=$((count + 1))
+
+    local item
+    item=$(printf '{"jobid":"%s","name":"%s","user":"%s","state":"%s","exitcode":"%s","start":"%s","end":"%s","elapsed":"%s","nodelist":"%s"}' \
+      "$(json_escape "$jobid")" \
+      "$(json_escape "$name")" \
+      "$(json_escape "$user")" \
+      "$(json_escape "$state")" \
+      "$(json_escape "$exitcode")" \
+      "$(json_escape "$start")" \
+      "$(json_escape "$end")" \
+      "$(json_escape "$elapsed")" \
+      "$(json_escape "$nodelist")")
+
+    if [[ -n "$job_json" ]]; then
+      job_json="${job_json},${item}"
+    else
+      job_json="${item}"
+    fi
+  done <<< "$output"
+
+  printf '{"ok":true,"action":"history","count":%d,"hours":%d,"jobs":[%s]}\n' \
+    "$count" "$hours" "$job_json"
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -221,6 +291,7 @@ Usage:
   bob-slurm resume --node NODE
   bob-slurm queue [--user USERNAME]
   bob-slurm job --jobid JOBID
+  bob-slurm history [--user USERNAME] [--state STATE] [--hours HOURS] [--limit LIMIT]
 USAGE
 }
 
@@ -359,6 +430,42 @@ main() {
       done
       [[ -n "$jobid" ]] || emit_error 2 "job requires --jobid"
       job_action "$jobid"
+      ;;
+
+    history)
+      local user=""
+      local state=""
+      local hours="24"
+      local limit="50"
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --user)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing user value"
+            user="$1"
+            ;;
+          --state)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing state value"
+            state="$1"
+            ;;
+          --hours)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing hours value"
+            hours="$1"
+            ;;
+          --limit)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing limit value"
+            limit="$1"
+            ;;
+          *)
+            emit_error 2 "Unknown argument for history: $1"
+            ;;
+        esac
+        shift || true
+      done
+      history_action "$user" "$state" "$hours" "$limit"
       ;;
 
     *)

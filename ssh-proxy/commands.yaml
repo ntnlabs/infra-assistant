@@ -142,6 +142,54 @@ commands:
   - pattern: "^/usr/local/bin/bob-slurm job --jobid [0-9]+$"
     description: "Slurm job details (root)"
 
+  - pattern: "^/usr/local/bin/bob-slurm history$"
+    description: "Slurm job history (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --user [a-zA-Z0-9_-]+$"
+    description: "Slurm job history for user (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --state [A-Z_]+$"
+    description: "Slurm job history by state (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --hours [0-9]+$"
+    description: "Slurm job history with time range (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --limit [0-9]+$"
+    description: "Slurm job history with limit (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --user [a-zA-Z0-9_-]+ --state [A-Z_]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --user [a-zA-Z0-9_-]+ --hours [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --user [a-zA-Z0-9_-]+ --limit [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --state [A-Z_]+ --hours [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --state [A-Z_]+ --limit [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --hours [0-9]+ --limit [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --user [a-zA-Z0-9_-]+ --state [A-Z_]+ --hours [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --user [a-zA-Z0-9_-]+ --state [A-Z_]+ --limit [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --user [a-zA-Z0-9_-]+ --hours [0-9]+ --limit [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --state [A-Z_]+ --hours [0-9]+ --limit [0-9]+$"
+    description: "Slurm job history filtered (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm history --user [a-zA-Z0-9_-]+ --state [A-Z_]+ --hours [0-9]+ --limit [0-9]+$"
+    description: "Slurm job history all filters (root)"
+
   # ============================================
   # SERVICE RESTARTS - Commented out by default
   # Uncomment when you trust the system

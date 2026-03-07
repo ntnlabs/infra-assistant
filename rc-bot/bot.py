@@ -447,6 +447,8 @@ Allowed hosts and commands are configured in:
 - **Job queue**: "@bob show slurm jobs" or "@bob slurm queue"
 - **Job queue for user**: "@bob show jobs for user john"
 - **Job details**: "@bob show details for job 12345"
+- **Job history**: "@bob show failed jobs" or "@bob show completed jobs from last 48 hours"
+- **User job history**: "@bob show john's jobs from last 24 hours"
 
 Safety:
 - Drain/resume require explicit confirmation (`confirm=true` in tool call)
@@ -674,6 +676,45 @@ def get_slurm_job_details(jobid: str) -> dict:
     return {"success": True, "data": f"Slurm job {job_id} details from {SLURM_MASTER_HOST}:\n```json\n{output}\n```"}
 
 
+def get_slurm_job_history(user: str = "", state: str = "", hours: int = 24, limit: int = 50) -> dict:
+    """Get Slurm job history using sacct. Can filter by user, state, time range, and limit results."""
+    if not SLURM_MASTER_HOST:
+        return {"success": False, "error": "SLURM_MASTER_HOST not configured"}
+
+    username = (user or "").strip()
+    if username and not re.fullmatch(r"[a-zA-Z0-9_-]+", username):
+        return {"success": False, "error": "Invalid username format"}
+
+    job_state = (state or "").strip().upper()
+    if job_state and not re.fullmatch(r"[A-Z_]+", job_state):
+        return {"success": False, "error": "Invalid state format"}
+
+    try:
+        hours_int = int(hours)
+        limit_int = int(limit)
+    except (ValueError, TypeError):
+        return {"success": False, "error": "Hours and limit must be numeric"}
+
+    if hours_int <= 0 or hours_int > 720:  # Max 30 days
+        return {"success": False, "error": "Hours must be between 1 and 720"}
+    if limit_int <= 0 or limit_int > 500:
+        return {"success": False, "error": "Limit must be between 1 and 500"}
+
+    cmd = f"{SLURM_WRAPPER_COMMAND} history"
+    if username:
+        cmd += f" --user {username}"
+    if job_state:
+        cmd += f" --state {job_state}"
+    cmd += f" --hours {hours_int} --limit {limit_int}"
+
+    proxy_result = _execute_via_ssh_proxy(host=SLURM_MASTER_HOST, command=cmd, timeout=90)
+    if not proxy_result.get("success"):
+        return proxy_result
+
+    output = proxy_result.get("output", "").strip()
+    return {"success": True, "data": f"Slurm job history from {SLURM_MASTER_HOST}:\n```json\n{output}\n```"}
+
+
 # Tool definitions for LLM
 # Tool definitions in Ollama format (OpenAI-compatible)
 OLLAMA_TOOLS = [
@@ -853,6 +894,37 @@ OLLAMA_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_slurm_job_history",
+            "description": "Get Slurm job history (completed, failed, cancelled jobs) using sacct. Use when users ask about past jobs, failed jobs, or job history. Common states: COMPLETED, FAILED, CANCELLED, TIMEOUT, NODE_FAIL.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user": {
+                        "type": "string",
+                        "description": "Optional: Filter by username"
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "Optional: Filter by job state (COMPLETED, FAILED, CANCELLED, etc.)"
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "description": "Hours to look back (default: 24, max: 720)",
+                        "default": 24
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return (default: 50, max: 500)",
+                        "default": 50
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_help",
             "description": "Show help information about available commands and how to use Bob. Use when users ask for help.",
             "parameters": {
@@ -874,6 +946,7 @@ TOOL_FUNCTIONS = {
     "manage_slurm_node": manage_slurm_node,
     "get_slurm_jobs": get_slurm_jobs,
     "get_slurm_job_details": get_slurm_job_details,
+    "get_slurm_job_history": get_slurm_job_history,
     "get_help": get_help
 }
 
