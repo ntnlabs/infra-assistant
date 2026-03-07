@@ -1280,7 +1280,10 @@ class RocketChatBot:
                                     }
 
                                 messages.append(tool_message)
-                                logger.info(f"Tool {function_name} completed: {'success' if tool_result.get('success') else 'failed'}")
+                                if tool_result.get('success'):
+                                    logger.info(f"Tool {function_name} completed: success")
+                                else:
+                                    logger.error(f"Tool {function_name} failed: {tool_result.get('error', 'Unknown error')}")
 
                             except Exception as e:
                                 logger.error(f"Error executing tool {function_name}: {e}")
