@@ -279,13 +279,14 @@ def get_active_alerts(min_severity: int = 3, limit: int = 25) -> dict:
         if not problems:
             return {"success": True, "data": "No active alerts found."}
 
-        # Format for readability
+        # Format for readability (include event ID so Bob can close/acknowledge by description)
         result = f"Found {len(problems)} active alerts:\n\n"
         for p in problems[:limit]:
             severity = p.get("severity", 0)
             severity_names = ["Not classified", "Information", "Warning", "Average", "High", "Disaster"]
             sev_name = severity_names[severity] if 0 <= severity <= 5 else "Unknown"
-            result += f"[{sev_name}] {p.get('name', 'Unknown')} on {p.get('hostname', 'Unknown')}\n"
+            eventid = p.get('eventid', 'unknown')
+            result += f"[{sev_name}] {p.get('name', 'Unknown')} on {p.get('hostname', 'Unknown')} (ID: {eventid})\n"
 
         return {"success": True, "data": result}
 
