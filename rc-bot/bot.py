@@ -1088,9 +1088,12 @@ class RocketChatBot:
 
                                 # Add tool result to messages
                                 if tool_result.get("success"):
+                                    result_data = tool_result.get("data", "No data returned")
+                                    logger.debug(f"Tool result data length: {len(str(result_data))} chars")
+                                    logger.debug(f"Tool result preview: {str(result_data)[:200]}...")
                                     tool_message = {
                                         "role": "tool",
-                                        "content": tool_result.get("data", "No data returned")
+                                        "content": result_data
                                     }
                                 else:
                                     # Tool failed - make error very clear
