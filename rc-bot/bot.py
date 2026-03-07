@@ -73,6 +73,10 @@ CONVERSATION_TIMEOUT = int(os.environ.get("CONVERSATION_TIMEOUT", "3600"))
 DM_REFRESH_INTERVAL = int(os.environ.get("DM_REFRESH_INTERVAL", "60"))
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 
+# Ollama model settings
+OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "2048"))
+
 # =============================================================================
 # Logging Setup
 # =============================================================================
@@ -996,8 +1000,8 @@ class RocketChatBot:
                         "stream": False,
                         "keep_alive": -1,  # Keep model loaded in VRAM indefinitely
                         "options": {
-                            "temperature": 0.2,  # Low temp = more factual, less creative/hallucination
-                            "num_ctx": 2048  # Smaller context = less confusion, less hallucination
+                            "temperature": OLLAMA_TEMPERATURE,  # Low temp = more factual, less creative/hallucination
+                            "num_ctx": OLLAMA_NUM_CTX  # Context window size (tokens)
                         }
                     },
                     timeout=120
