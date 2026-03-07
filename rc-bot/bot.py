@@ -444,6 +444,9 @@ Allowed hosts and commands are configured in:
 - **Slurm node status**: "@bob check slurm node gpu001"
 - **Drain node**: "@bob drain slurm node gpu001 reason maintenance ticket-123 confirm"
 - **Resume node**: "@bob resume slurm node gpu001 confirm"
+- **Job queue**: "@bob show slurm jobs" or "@bob slurm queue"
+- **Job queue for user**: "@bob show jobs for user john"
+- **Job details**: "@bob show details for job 12345"
 
 Safety:
 - Drain/resume require explicit confirmation (`confirm=true` in tool call)
@@ -629,6 +632,48 @@ def manage_slurm_node(action: str, node: str, reason: str = "", confirm: bool = 
     return {"success": True, "data": f"Slurm {action_normalized} result for {node_name}:\n```json\n{output}\n```"}
 
 
+def get_slurm_jobs(user: str = "") -> dict:
+    """Get Slurm job queue, optionally filtered by username."""
+    if not SLURM_MASTER_HOST:
+        return {"success": False, "error": "SLURM_MASTER_HOST not configured"}
+
+    username = (user or "").strip()
+    if username and not re.fullmatch(r"[a-zA-Z0-9_-]+", username):
+        return {"success": False, "error": "Invalid username format"}
+
+    cmd = f"{SLURM_WRAPPER_COMMAND} queue"
+    if username:
+        cmd += f" --user {username}"
+
+    proxy_result = _execute_via_ssh_proxy(host=SLURM_MASTER_HOST, command=cmd, timeout=60)
+    if not proxy_result.get("success"):
+        return proxy_result
+
+    output = proxy_result.get("output", "").strip()
+    return {"success": True, "data": f"Slurm job queue from {SLURM_MASTER_HOST}:\n```json\n{output}\n```"}
+
+
+def get_slurm_job_details(jobid: str) -> dict:
+    """Get detailed information about a specific Slurm job."""
+    if not SLURM_MASTER_HOST:
+        return {"success": False, "error": "SLURM_MASTER_HOST not configured"}
+
+    job_id = (jobid or "").strip()
+    if not job_id:
+        return {"success": False, "error": "Job ID is required"}
+    if not re.fullmatch(r"[0-9]+", job_id):
+        return {"success": False, "error": "Invalid job ID format (must be numeric)"}
+
+    cmd = f"{SLURM_WRAPPER_COMMAND} job --jobid {job_id}"
+
+    proxy_result = _execute_via_ssh_proxy(host=SLURM_MASTER_HOST, command=cmd, timeout=60)
+    if not proxy_result.get("success"):
+        return proxy_result
+
+    output = proxy_result.get("output", "").strip()
+    return {"success": True, "data": f"Slurm job {job_id} details from {SLURM_MASTER_HOST}:\n```json\n{output}\n```"}
+
+
 # Tool definitions for LLM
 # Tool definitions in Ollama format (OpenAI-compatible)
 OLLAMA_TOOLS = [
@@ -774,6 +819,40 @@ OLLAMA_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "get_slurm_jobs",
+            "description": "Get Slurm job queue, optionally filtered by username. Use when users ask about running jobs, queued jobs, or job status.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user": {
+                        "type": "string",
+                        "description": "Optional: Filter jobs by username"
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_slurm_job_details",
+            "description": "Get detailed information about a specific Slurm job by job ID. Use when users ask for details about a particular job.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "jobid": {
+                        "type": "string",
+                        "description": "Slurm job ID (numeric)"
+                    }
+                },
+                "required": ["jobid"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_help",
             "description": "Show help information about available commands and how to use Bob. Use when users ask for help.",
             "parameters": {
@@ -793,6 +872,8 @@ TOOL_FUNCTIONS = {
     "run_command": run_command,
     "get_slurm_nodes": get_slurm_nodes,
     "manage_slurm_node": manage_slurm_node,
+    "get_slurm_jobs": get_slurm_jobs,
+    "get_slurm_job_details": get_slurm_job_details,
     "get_help": get_help
 }
 

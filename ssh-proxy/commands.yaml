@@ -133,6 +133,15 @@ commands:
   - pattern: "^/usr/local/bin/bob-slurm resume --node [a-zA-Z0-9_.:-]+$"
     description: "Resume Slurm node (root)"
 
+  - pattern: "^/usr/local/bin/bob-slurm queue$"
+    description: "Slurm job queue (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm queue --user [a-zA-Z0-9_-]+$"
+    description: "Slurm job queue for user (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm job --jobid [0-9]+$"
+    description: "Slurm job details (root)"
+
   # ============================================
   # SERVICE RESTARTS - Commented out by default
   # Uncomment when you trust the system

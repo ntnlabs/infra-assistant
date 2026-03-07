@@ -160,6 +160,58 @@ resume_action() {
   node_status_action "$node"
 }
 
+queue_action() {
+  local user="${1-}"
+
+  if [[ -n "$user" ]]; then
+    [[ "$user" =~ ^[a-zA-Z0-9_-]+$ ]] || emit_error 2 "Invalid username format"
+    local output
+    output="$(squeue -u "$user" -o "%i|%j|%u|%T|%M|%l|%D|%R" -h 2>/dev/null || true)"
+  else
+    local output
+    output="$(squeue -o "%i|%j|%u|%T|%M|%l|%D|%R" -h 2>/dev/null || true)"
+  fi
+
+  [[ -n "$output" ]] || emit_error 4 "No jobs found"
+
+  local job_json=""
+  local count=0
+  while IFS='|' read -r jobid name user state time limit nodes nodelist; do
+    [[ -n "$jobid" ]] || continue
+    count=$((count + 1))
+    local item
+    item=$(printf '{"jobid":"%s","name":"%s","user":"%s","state":"%s","time":"%s","limit":"%s","nodes":"%s","nodelist":"%s"}' \
+      "$(json_escape "$jobid")" \
+      "$(json_escape "$name")" \
+      "$(json_escape "$user")" \
+      "$(json_escape "$state")" \
+      "$(json_escape "$time")" \
+      "$(json_escape "$limit")" \
+      "$(json_escape "$nodes")" \
+      "$(json_escape "$nodelist")")
+    if [[ -n "$job_json" ]]; then
+      job_json="${job_json},${item}"
+    else
+      job_json="${item}"
+    fi
+  done <<< "$output"
+
+  printf '{"ok":true,"action":"queue","count":%d,"jobs":[%s]}\n' "$count" "$job_json"
+}
+
+job_action() {
+  local jobid="$1"
+  [[ "$jobid" =~ ^[0-9]+$ ]] || emit_error 2 "Invalid job ID format"
+
+  local output
+  output="$(scontrol show job "$jobid" 2>/dev/null || true)"
+  [[ -n "$output" ]] || emit_error 4 "Job not found: $jobid"
+
+  printf '{"ok":true,"action":"job","jobid":"%s","details":"%s"}\n' \
+    "$(json_escape "$jobid")" \
+    "$(json_escape "$output")"
+}
+
 usage() {
   cat <<'USAGE'
 Usage:
@@ -167,6 +219,8 @@ Usage:
   bob-slurm node-status --node NODE
   bob-slurm drain --node NODE --reason REASON
   bob-slurm resume --node NODE
+  bob-slurm queue [--user USERNAME]
+  bob-slurm job --jobid JOBID
 USAGE
 }
 
@@ -268,6 +322,43 @@ main() {
       done
       [[ -n "$node" ]] || emit_error 2 "resume requires --node"
       resume_action "$node"
+      ;;
+
+    queue)
+      local user=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --user)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing user value"
+            user="$1"
+            ;;
+          *)
+            emit_error 2 "Unknown argument for queue: $1"
+            ;;
+        esac
+        shift || true
+      done
+      queue_action "$user"
+      ;;
+
+    job)
+      local jobid=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --jobid)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing jobid value"
+            jobid="$1"
+            ;;
+          *)
+            emit_error 2 "Unknown argument for job: $1"
+            ;;
+        esac
+        shift || true
+      done
+      [[ -n "$jobid" ]] || emit_error 2 "job requires --jobid"
+      job_action "$jobid"
       ;;
 
     *)
