@@ -1257,6 +1257,21 @@ class RocketChatBot:
                                         reason=function_args.get("reason", ""),
                                         confirm=function_args.get("confirm", False)
                                     )
+                                elif function_name == "get_slurm_jobs":
+                                    tool_result = tool_func(
+                                        user=function_args.get("user", "")
+                                    )
+                                elif function_name == "get_slurm_job_details":
+                                    tool_result = tool_func(
+                                        jobid=function_args.get("jobid")
+                                    )
+                                elif function_name == "get_slurm_job_history":
+                                    tool_result = tool_func(
+                                        user=function_args.get("user", ""),
+                                        state=function_args.get("state", ""),
+                                        hours=function_args.get("hours", 24),
+                                        limit=function_args.get("limit", 50)
+                                    )
                                 elif function_name == "get_help":
                                     tool_result = tool_func()
                                 else:
