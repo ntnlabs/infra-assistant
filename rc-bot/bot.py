@@ -64,7 +64,7 @@ SSH_PROXY_TOKEN = os.environ.get("SSH_PROXY_TOKEN", "")
 
 # Slurm (optional, via ssh-proxy to Slurm master wrapper)
 SLURM_MASTER_HOST = os.environ.get("SLURM_MASTER_HOST", "").strip()
-SLURM_WRAPPER_COMMAND = os.environ.get("SLURM_WRAPPER_COMMAND", "sudo -n /usr/local/bin/bob-slurm").strip() or "sudo -n /usr/local/bin/bob-slurm"
+SLURM_WRAPPER_COMMAND = os.environ.get("SLURM_WRAPPER_COMMAND", "/usr/local/bin/bob-slurm").strip() or "/usr/local/bin/bob-slurm"
 SLURM_DEFAULT_PARTITION = os.environ.get("SLURM_DEFAULT_PARTITION", "").strip()
 
 # Settings
@@ -1441,16 +1441,40 @@ class RocketChatBot:
                 if result.ok:
                     messages = result.json().get("messages", [])
 
-                    # On first poll, just mark all messages as seen without responding
+                    # On first poll, mark old messages as seen but process recent ones
                     dm_key = f"dm_{room_id}"
                     if dm_key not in self.first_poll_done:
-                        logger.info(f"First poll of DM {room_id}, marking {len(messages)} messages as seen")
+                        from dateutil import parser
+                        now = datetime.now()
+                        old_count = 0
+                        recent_count = 0
+
                         for message in messages:
                             msg_id = message.get("_id", "")
-                            if msg_id:
+                            if not msg_id:
+                                continue
+
+                            # Check message age
+                            msg_time_str = message.get("ts", "")
+                            try:
+                                msg_time = parser.parse(msg_time_str)
+                                age_seconds = (now - msg_time).total_seconds()
+
+                                # Messages older than 60 seconds: mark as seen, don't process (backlog)
+                                if age_seconds > 60:
+                                    processed_messages.add(msg_id)
+                                    old_count += 1
+                                else:
+                                    # Recent message: process normally
+                                    recent_count += 1
+                            except:
+                                # Can't parse timestamp: assume old, mark as seen
                                 processed_messages.add(msg_id)
+                                old_count += 1
+
+                        logger.info(f"First poll of DM {room_id}: marked {old_count} old messages as seen, will process {recent_count} recent")
                         self.first_poll_done.add(dm_key)
-                        continue
+                        # Don't continue - fall through to process recent messages
 
                     # Process oldest first
                     for message in reversed(messages):

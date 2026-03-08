@@ -6,10 +6,13 @@ This folder contains a restricted wrapper for Slurm node operations.
 
 - Bob should not run raw shell commands like `scontrol` directly.
 - `bob-slurm` exposes a minimal audited command surface:
-  - `summary`
-  - `node-status`
-  - `drain`
-  - `resume`
+  - `summary` - Cluster node summary
+  - `node-status` - Individual node status
+  - `drain` - Drain a node (requires reason)
+  - `resume` - Resume a drained node
+  - `queue` - Job queue (current running/pending jobs)
+  - `job` - Detailed job information
+  - `history` - Historical job data (completed/failed jobs via sacct)
 
 ## Install on Slurm Master
 
@@ -31,6 +34,10 @@ sudo visudo -cf /etc/sudoers.d/bob-slurm
 ```bash
 /usr/local/bin/bob-slurm summary
 /usr/local/bin/bob-slurm node-status --node <node>
+/usr/local/bin/bob-slurm queue
+/usr/local/bin/bob-slurm queue --user username
+/usr/local/bin/bob-slurm job --jobid 12345
+/usr/local/bin/bob-slurm history --state FAILED --hours 24
 sudo /usr/local/bin/bob-slurm drain --node <node> --reason "ops ticket-123 maintenance"
 sudo /usr/local/bin/bob-slurm resume --node <node>
 ```
@@ -51,9 +58,11 @@ hosts:
 
 ```bash
 SLURM_MASTER_HOST=slurm-master
-SLURM_WRAPPER_COMMAND=sudo -n /usr/local/bin/bob-slurm
+SLURM_WRAPPER_COMMAND=/usr/local/bin/bob-slurm
 SLURM_DEFAULT_PARTITION=
 ```
+
+If Bob runs as a non-root user, set `SLURM_WRAPPER_COMMAND=sudo -n /usr/local/bin/bob-slurm` and configure sudoers accordingly.
 
 3. Ensure `ssh-proxy/commands.yaml` includes the `bob-slurm` allowlist patterns.
 

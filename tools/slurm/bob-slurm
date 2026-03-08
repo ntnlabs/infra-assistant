@@ -399,6 +399,7 @@ main() {
       ;;
 
     queue)
+      require_cmd squeue
       local user=""
       while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -436,6 +437,7 @@ main() {
       ;;
 
     history)
+      require_cmd sacct
       local user=""
       local state=""
       local hours="24"
