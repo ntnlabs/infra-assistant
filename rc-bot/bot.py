@@ -1444,8 +1444,8 @@ class RocketChatBot:
                     # On first poll, mark old messages as seen but process recent ones
                     dm_key = f"dm_{room_id}"
                     if dm_key not in self.first_poll_done:
-                        from dateutil import parser
-                        now = datetime.now()
+                        from datetime import timezone
+                        now = datetime.now(timezone.utc)
                         old_count = 0
                         recent_count = 0
 
@@ -1457,7 +1457,11 @@ class RocketChatBot:
                             # Check message age
                             msg_time_str = message.get("ts", "")
                             try:
-                                msg_time = parser.parse(msg_time_str)
+                                # Rocket.Chat timestamps are ISO 8601 format
+                                # Remove trailing Z and parse
+                                if msg_time_str.endswith('Z'):
+                                    msg_time_str = msg_time_str[:-1] + '+00:00'
+                                msg_time = datetime.fromisoformat(msg_time_str)
                                 age_seconds = (now - msg_time).total_seconds()
 
                                 # Messages older than 60 seconds: mark as seen, don't process (backlog)
@@ -1467,8 +1471,9 @@ class RocketChatBot:
                                 else:
                                     # Recent message: process normally
                                     recent_count += 1
-                            except:
+                            except Exception as e:
                                 # Can't parse timestamp: assume old, mark as seen
+                                logger.warning(f"Failed to parse timestamp '{msg_time_str}': {e}")
                                 processed_messages.add(msg_id)
                                 old_count += 1
 
