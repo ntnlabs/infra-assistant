@@ -1186,7 +1186,8 @@ class RocketChatBot:
                         "keep_alive": 300,  # Keep model loaded for 5 minutes after last use
                         "options": {
                             "temperature": OLLAMA_TEMPERATURE,  # Low temp = more factual, less creative/hallucination
-                            "num_ctx": OLLAMA_NUM_CTX  # Context window size (tokens)
+                            "num_ctx": OLLAMA_NUM_CTX,  # Context window size (tokens)
+                            "num_predict": 2048  # Max response length (prevents runaway generation)
                         }
                     },
                     timeout=180
