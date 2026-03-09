@@ -22,6 +22,7 @@ import re
 import sys
 import time
 import logging
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -101,6 +102,11 @@ MAX_CONVERSATIONS = 500  # Prevent unbounded memory growth
 # Track processed message IDs to avoid duplicates
 processed_messages: set = set()
 MAX_PROCESSED_MESSAGES = 10000
+
+# Threading: Limit concurrent Ollama calls (VRAM constraint)
+ollama_semaphore = threading.Semaphore(3)  # Max 3 concurrent inferences
+conversations_lock = threading.Lock()  # Thread-safe conversation access
+processed_messages_lock = threading.Lock()  # Thread-safe processed messages
 
 # System prompt for the bot
 SYSTEM_PROMPT = """You are Bob, an infrastructure monitoring and operations assistant for the IT operations team.
@@ -1064,12 +1070,13 @@ class RocketChatBot:
             self.last_dm_refresh = datetime.now()
 
     def should_respond(self, message: dict, is_dm: bool = False) -> bool:
-        """Check if bot should respond to this message."""
+        """Check if bot should respond to this message. Thread-safe."""
         msg_id = message.get("_id", "")
 
-        # Skip already processed
-        if msg_id in processed_messages:
-            return False
+        # Skip already processed (thread-safe check)
+        with processed_messages_lock:
+            if msg_id in processed_messages:
+                return False
 
         # Skip own messages
         sender = message.get("u", {}).get("username", "")
@@ -1106,48 +1113,51 @@ class RocketChatBot:
         return text
 
     def get_conversation_history(self, room_id: str, user: str) -> list:
-        """Get conversation history for a room + user."""
+        """Get conversation history for a room + user. Thread-safe."""
         conv_key = f"{room_id}:{user}"
 
-        if conv_key in conversations:
-            conv = conversations[conv_key]
+        with conversations_lock:
+            if conv_key in conversations:
+                conv = conversations[conv_key]
 
-            # Check if conversation is still active
-            if CONVERSATION_TIMEOUT > 0:
-                elapsed = datetime.now() - conv["last_activity"]
-                if elapsed > timedelta(seconds=CONVERSATION_TIMEOUT):
-                    logger.info(f"Conversation expired for {user} in room {room_id}")
-                    del conversations[conv_key]
-                    return []
+                # Check if conversation is still active
+                if CONVERSATION_TIMEOUT > 0:
+                    elapsed = datetime.now() - conv["last_activity"]
+                    if elapsed > timedelta(seconds=CONVERSATION_TIMEOUT):
+                        logger.info(f"Conversation expired for {user} in room {room_id}")
+                        del conversations[conv_key]
+                        return []
 
-            return conv.get("messages", [])
+                # Return a copy to avoid race conditions
+                return list(conv.get("messages", []))
 
-        return []
+            return []
 
     def update_conversation(self, room_id: str, user: str, user_msg: str, assistant_msg: str):
-        """Update conversation history."""
+        """Update conversation history. Thread-safe."""
         conv_key = f"{room_id}:{user}"
 
-        if conv_key not in conversations:
-            conversations[conv_key] = {
-                "messages": [],
-                "last_activity": datetime.now()
-            }
+        with conversations_lock:
+            if conv_key not in conversations:
+                conversations[conv_key] = {
+                    "messages": [],
+                    "last_activity": datetime.now()
+                }
 
-        # Add messages to history
-        conversations[conv_key]["messages"].append({"role": "user", "content": user_msg})
-        conversations[conv_key]["messages"].append({"role": "assistant", "content": assistant_msg})
-        conversations[conv_key]["last_activity"] = datetime.now()
+            # Add messages to history
+            conversations[conv_key]["messages"].append({"role": "user", "content": user_msg})
+            conversations[conv_key]["messages"].append({"role": "assistant", "content": assistant_msg})
+            conversations[conv_key]["last_activity"] = datetime.now()
 
-        # Keep only last 20 messages (10 exchanges)
-        if len(conversations[conv_key]["messages"]) > 20:
-            conversations[conv_key]["messages"] = conversations[conv_key]["messages"][-20:]
+            # Keep only last 20 messages (10 exchanges)
+            if len(conversations[conv_key]["messages"]) > 20:
+                conversations[conv_key]["messages"] = conversations[conv_key]["messages"][-20:]
 
-        # Evict oldest conversation if limit exceeded (LRU)
-        if len(conversations) > MAX_CONVERSATIONS:
-            oldest_key = min(conversations.keys(), key=lambda k: conversations[k]["last_activity"])
-            logger.info(f"Evicting oldest conversation: {oldest_key}")
-            del conversations[oldest_key]
+            # Evict oldest conversation if limit exceeded (LRU)
+            if len(conversations) > MAX_CONVERSATIONS:
+                oldest_key = min(conversations.keys(), key=lambda k: conversations[k]["last_activity"])
+                logger.info(f"Evicting oldest conversation: {oldest_key}")
+                del conversations[oldest_key]
 
     def call_ollama(self, text: str, room_id: str, user: str) -> str:
         """Send message to Ollama and get response with tool support."""
@@ -1175,24 +1185,25 @@ class RocketChatBot:
                     logger.debug(f"Last message role: {messages[-1].get('role')}")
                     logger.debug(f"Last message content length: {len(str(messages[-1].get('content', '')))} chars")
 
-                # Call Ollama with native tool calling
+                # Call Ollama with native tool calling (acquire semaphore to limit concurrency)
                 start_time = time.time()
-                response = requests.post(
-                    f"{OLLAMA_URL}/api/chat",
-                    json={
-                        "model": OLLAMA_MODEL,
-                        "messages": messages,
-                        "tools": OLLAMA_TOOLS,  # Enable native tool calling
-                        "stream": False,
-                        "keep_alive": 300,  # Keep model loaded for 5 minutes after last use
-                        "options": {
-                            "temperature": OLLAMA_TEMPERATURE,  # Low temp = more factual, less creative/hallucination
-                            "num_ctx": OLLAMA_NUM_CTX,  # Context window size (tokens)
-                            "num_predict": 2048  # Max response length (prevents runaway generation)
-                        }
-                    },
-                    timeout=180
-                )
+                with ollama_semaphore:  # Limit to 3 concurrent Ollama calls
+                    response = requests.post(
+                        f"{OLLAMA_URL}/api/chat",
+                        json={
+                            "model": OLLAMA_MODEL,
+                            "messages": messages,
+                            "tools": OLLAMA_TOOLS,  # Enable native tool calling
+                            "stream": False,
+                            "keep_alive": 300,  # Keep model loaded for 5 minutes after last use
+                            "options": {
+                                "temperature": OLLAMA_TEMPERATURE,  # Low temp = more factual, less creative/hallucination
+                                "num_ctx": OLLAMA_NUM_CTX,  # Context window size (tokens)
+                                "num_predict": 2048  # Max response length (prevents runaway generation)
+                            }
+                        },
+                        timeout=180
+                    )
 
                 if response.status_code != 200:
                     logger.error(f"Ollama returned {response.status_code}: {response.text}")
@@ -1360,17 +1371,18 @@ class RocketChatBot:
             logger.error(f"Error sending message: {e}")
 
     def process_message(self, message: dict, room_id: str, is_dm: bool = False):
-        """Process a single message."""
+        """Process a single message. Can run in parallel threads."""
         msg_id = message.get("_id", "")
 
-        # Mark as processed
-        processed_messages.add(msg_id)
+        # Mark as processed (thread-safe)
+        with processed_messages_lock:
+            processed_messages.add(msg_id)
 
-        # Cleanup old processed messages
-        if len(processed_messages) > MAX_PROCESSED_MESSAGES:
-            to_remove = list(processed_messages)[:MAX_PROCESSED_MESSAGES // 2]
-            for item in to_remove:
-                processed_messages.discard(item)
+            # Cleanup old processed messages
+            if len(processed_messages) > MAX_PROCESSED_MESSAGES:
+                to_remove = list(processed_messages)[:MAX_PROCESSED_MESSAGES // 2]
+                for item in to_remove:
+                    processed_messages.discard(item)
 
         # Extract info
         text = self.get_message_text(message, is_dm=is_dm)
@@ -1387,12 +1399,13 @@ class RocketChatBot:
         reset_keywords = ["reset", "forget", "clear", "reset context", "forget conversation", "start over"]
         if any(keyword == text_lower or text_lower.endswith(f" {keyword}") or text_lower.startswith(f"{keyword} ") for keyword in reset_keywords):
             conv_key = f"{room_id}:{user}"
-            if conv_key in conversations:
-                del conversations[conv_key]
-                logger.info(f"Cleared conversation context for {user} in room {room_id}")
-                self.send_message(room_id, "Conversation context cleared. Starting fresh! 🔄")
-            else:
-                self.send_message(room_id, "No conversation context to clear. Already starting fresh! ✨")
+            with conversations_lock:
+                if conv_key in conversations:
+                    del conversations[conv_key]
+                    logger.info(f"Cleared conversation context for {user} in room {room_id}")
+                    self.send_message(room_id, "Conversation context cleared. Starting fresh! 🔄")
+                else:
+                    self.send_message(room_id, "No conversation context to clear. Already starting fresh! ✨")
             return
 
         # Get response from Ollama
@@ -1419,17 +1432,24 @@ class RocketChatBot:
                     # On first poll, just mark all messages as seen without responding
                     if room_id not in self.first_poll_done:
                         logger.info(f"First poll of {channel_name}, marking {len(messages)} messages as seen")
-                        for message in messages:
-                            msg_id = message.get("_id", "")
-                            if msg_id:
-                                processed_messages.add(msg_id)
+                        with processed_messages_lock:
+                            for message in messages:
+                                msg_id = message.get("_id", "")
+                                if msg_id:
+                                    processed_messages.add(msg_id)
                         self.first_poll_done.add(room_id)
                         continue
 
-                    # Process oldest first
+                    # Process oldest first (in parallel threads)
                     for message in reversed(messages):
                         if self.should_respond(message, is_dm=False):
-                            self.process_message(message, room_id, is_dm=False)
+                            # Spawn thread for parallel processing
+                            thread = threading.Thread(
+                                target=self.process_message,
+                                args=(message, room_id, False),
+                                daemon=True
+                            )
+                            thread.start()
 
             except Exception as e:
                 logger.error(f"Error polling {channel_name}: {e}")
@@ -1468,7 +1488,8 @@ class RocketChatBot:
 
                                 # Messages older than 60 seconds: mark as seen, don't process (backlog)
                                 if age_seconds > 60:
-                                    processed_messages.add(msg_id)
+                                    with processed_messages_lock:
+                                        processed_messages.add(msg_id)
                                     old_count += 1
                                 else:
                                     # Recent message: process normally
@@ -1476,17 +1497,24 @@ class RocketChatBot:
                             except Exception as e:
                                 # Can't parse timestamp: assume old, mark as seen
                                 logger.warning(f"Failed to parse timestamp '{msg_time_str}': {e}")
-                                processed_messages.add(msg_id)
+                                with processed_messages_lock:
+                                    processed_messages.add(msg_id)
                                 old_count += 1
 
                         logger.info(f"First poll of DM {room_id}: marked {old_count} old messages as seen, will process {recent_count} recent")
                         self.first_poll_done.add(dm_key)
                         # Don't continue - fall through to process recent messages
 
-                    # Process oldest first
+                    # Process oldest first (in parallel threads)
                     for message in reversed(messages):
                         if self.should_respond(message, is_dm=True):
-                            self.process_message(message, room_id, is_dm=True)
+                            # Spawn thread for parallel processing
+                            thread = threading.Thread(
+                                target=self.process_message,
+                                args=(message, room_id, True),
+                                daemon=True
+                            )
+                            thread.start()
 
             except Exception as e:
                 logger.debug(f"Error polling DM {room_id}: {e}")
