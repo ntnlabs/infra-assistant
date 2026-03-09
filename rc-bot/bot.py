@@ -400,8 +400,7 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", 
                 return {"success": False, "error": "Severity level (0-5) required for change_severity"}
             payload["severity"] = severity
 
-        if action == "suppress" and suppress_hours:
-            import time
+        if suppress_hours:
             suppress_until = int(time.time()) + (suppress_hours * 3600)
             payload["suppress_until"] = suppress_until
 
@@ -428,6 +427,8 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", 
             else:
                 result = f"✅ Successfully {action}d alert {event_id}"
 
+            if suppress_hours and action != "suppress":
+                result += f" and suppressed for {suppress_hours} hours"
             if message:
                 result += f" with message: '{message}'"
             return {"success": True, "data": result}
@@ -833,7 +834,7 @@ OLLAMA_TOOLS = [
                     },
                     "suppress_hours": {
                         "type": "integer",
-                        "description": "Hours to suppress for suppress action"
+                        "description": "Number of HOURS to suppress/postpone the alert. This is HOURS not days. Convert: 1 day=24, 7 days=168, 30 days=720. Can be combined with any action (e.g. acknowledge + suppress_hours=720 to acknowledge and postpone 30 days at once)."
                     }
                 },
                 "required": ["event_id"]
