@@ -78,6 +78,7 @@ DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "2048"))
 MAX_OLLAMA_ITERATIONS = min(int(os.environ.get("MAX_OLLAMA_ITERATIONS", "5")), 25)  # Hard cap at 25
+MAX_OLLAMA_CONCURRENCY = min(int(os.environ.get("MAX_OLLAMA_CONCURRENCY", "3")), 10)  # Hard cap at 10
 
 # =============================================================================
 # Logging Setup
@@ -104,7 +105,8 @@ processed_messages: set = set()
 MAX_PROCESSED_MESSAGES = 10000
 
 # Threading: Limit concurrent Ollama calls (VRAM constraint)
-ollama_semaphore = threading.Semaphore(3)  # Max 3 concurrent inferences
+# Semaphore initialized after settings loaded
+ollama_semaphore = None  # Will be set in main()
 conversations_lock = threading.Lock()  # Thread-safe conversation access
 processed_messages_lock = threading.Lock()  # Thread-safe processed messages
 
@@ -1597,8 +1599,14 @@ def validate_config() -> bool:
 
 def main():
     """Entry point."""
+    global ollama_semaphore
+
     if not validate_config():
         sys.exit(1)
+
+    # Initialize semaphore with configured concurrency limit
+    ollama_semaphore = threading.Semaphore(MAX_OLLAMA_CONCURRENCY)
+    logger.info(f"Ollama concurrency limit: {MAX_OLLAMA_CONCURRENCY}")
 
     bot = RocketChatBot()
     bot.run()
