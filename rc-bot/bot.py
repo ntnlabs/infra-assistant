@@ -986,6 +986,8 @@ class RocketChatBot:
         self.dm_room_ids: set = set()  # DM room IDs
         self.last_dm_refresh: Optional[datetime] = None
         self.first_poll_done: set = set()  # Track rooms that have been polled once
+        from datetime import timezone
+        self.start_time = datetime.now(timezone.utc)  # Used to skip pre-startup DM messages
 
         # ThreadPoolExecutor for message processing
         # max_workers = 2x concurrency to allow queuing while Ollama calls are in flight
@@ -1192,6 +1194,7 @@ class RocketChatBot:
 
         max_iterations = MAX_OLLAMA_ITERATIONS  # Prevent infinite loops
         iteration = 0
+        executed_tool_calls: set = set()  # Track (tool_name, args_hash) to prevent duplicate calls
 
         try:
             while iteration < max_iterations:
@@ -1258,6 +1261,17 @@ class RocketChatBot:
                                 function_args = {}
                         if not isinstance(function_args, dict):
                             function_args = {}
+
+                        # Dedup: skip if exact same tool+args already executed this session
+                        call_key = (function_name, json_lib.dumps(function_args, sort_keys=True))
+                        if call_key in executed_tool_calls:
+                            logger.warning(f"Skipping duplicate tool call: {function_name} with args {function_args}")
+                            messages.append({
+                                "role": "tool",
+                                "content": f"⚠️ This tool was already called with these exact arguments and succeeded. Do not call it again. Provide your final answer to the user now."
+                            })
+                            continue
+                        executed_tool_calls.add(call_key)
 
                         logger.info(f"Executing tool: {function_name} with args: {function_args}")
 
@@ -1482,11 +1496,9 @@ class RocketChatBot:
                 if result.ok:
                     messages = result.json().get("messages", [])
 
-                    # On first poll, mark old messages as seen but process recent ones
+                    # On first poll, mark pre-startup messages as seen, process post-startup ones
                     dm_key = f"dm_{room_id}"
                     if dm_key not in self.first_poll_done:
-                        from datetime import timezone
-                        now = datetime.now(timezone.utc)
                         old_count = 0
                         recent_count = 0
 
@@ -1495,7 +1507,7 @@ class RocketChatBot:
                             if not msg_id:
                                 continue
 
-                            # Check message age
+                            # Check message timestamp vs bot start time
                             msg_time_str = message.get("ts", "")
                             try:
                                 # Rocket.Chat timestamps are ISO 8601 format
@@ -1503,24 +1515,23 @@ class RocketChatBot:
                                 if msg_time_str.endswith('Z'):
                                     msg_time_str = msg_time_str[:-1] + '+00:00'
                                 msg_time = datetime.fromisoformat(msg_time_str)
-                                age_seconds = (now - msg_time).total_seconds()
 
-                                # Messages older than 60 seconds: mark as seen, don't process (backlog)
-                                if age_seconds > 60:
+                                # Messages from before bot started: skip (already handled or pre-existing)
+                                if msg_time < self.start_time:
                                     with processed_messages_lock:
                                         processed_messages[msg_id] = True
                                     old_count += 1
                                 else:
-                                    # Recent message: process normally
+                                    # Message arrived after bot started: process normally
                                     recent_count += 1
                             except Exception as e:
-                                # Can't parse timestamp: assume old, mark as seen
+                                # Can't parse timestamp: assume pre-startup, mark as seen
                                 logger.warning(f"Failed to parse timestamp '{msg_time_str}': {e}")
                                 with processed_messages_lock:
                                     processed_messages[msg_id] = True
                                 old_count += 1
 
-                        logger.info(f"First poll of DM {room_id}: marked {old_count} old messages as seen, will process {recent_count} recent")
+                        logger.info(f"First poll of DM {room_id}: marked {old_count} pre-startup messages as seen, will process {recent_count} post-startup")
                         self.first_poll_done.add(dm_key)
                         # Don't continue - fall through to process recent messages
 
