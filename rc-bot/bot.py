@@ -78,7 +78,7 @@ DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "2048"))
 MAX_OLLAMA_ITERATIONS = min(int(os.environ.get("MAX_OLLAMA_ITERATIONS", "5")), 25)  # Hard cap at 25
-MAX_OLLAMA_CONCURRENCY = min(int(os.environ.get("MAX_OLLAMA_CONCURRENCY", "3")), 10)  # Hard cap at 10
+MAX_OLLAMA_CONCURRENCY = max(1, min(int(os.environ.get("MAX_OLLAMA_CONCURRENCY", "3")), 10))  # Range: 1-10
 
 # =============================================================================
 # Logging Setup
@@ -1071,14 +1071,22 @@ class RocketChatBot:
             logger.warning(f"Could not refresh DM rooms: {e}")
             self.last_dm_refresh = datetime.now()
 
-    def should_respond(self, message: dict, is_dm: bool = False) -> bool:
-        """Check if bot should respond to this message. Thread-safe."""
+    def should_respond_and_claim(self, message: dict, is_dm: bool = False) -> bool:
+        """Check if bot should respond AND atomically claim message. Thread-safe."""
         msg_id = message.get("_id", "")
 
-        # Skip already processed (thread-safe check)
+        # Atomic check-and-set to prevent duplicate processing
         with processed_messages_lock:
             if msg_id in processed_messages:
                 return False
+            # Claim message immediately (before spawning thread)
+            processed_messages.add(msg_id)
+
+            # Cleanup old processed messages while we have the lock
+            if len(processed_messages) > MAX_PROCESSED_MESSAGES:
+                to_remove = list(processed_messages)[:MAX_PROCESSED_MESSAGES // 2]
+                for item in to_remove:
+                    processed_messages.discard(item)
 
         # Skip own messages
         sender = message.get("u", {}).get("username", "")
@@ -1373,19 +1381,10 @@ class RocketChatBot:
             logger.error(f"Error sending message: {e}")
 
     def process_message(self, message: dict, room_id: str, is_dm: bool = False):
-        """Process a single message. Can run in parallel threads."""
-        msg_id = message.get("_id", "")
+        """Process a single message. Can run in parallel threads.
 
-        # Mark as processed (thread-safe)
-        with processed_messages_lock:
-            processed_messages.add(msg_id)
-
-            # Cleanup old processed messages
-            if len(processed_messages) > MAX_PROCESSED_MESSAGES:
-                to_remove = list(processed_messages)[:MAX_PROCESSED_MESSAGES // 2]
-                for item in to_remove:
-                    processed_messages.discard(item)
-
+        Note: Message is already claimed by should_respond_and_claim() before this runs.
+        """
         # Extract info
         text = self.get_message_text(message, is_dm=is_dm)
         user = message.get("u", {}).get("username", "unknown")
@@ -1401,13 +1400,19 @@ class RocketChatBot:
         reset_keywords = ["reset", "forget", "clear", "reset context", "forget conversation", "start over"]
         if any(keyword == text_lower or text_lower.endswith(f" {keyword}") or text_lower.startswith(f"{keyword} ") for keyword in reset_keywords):
             conv_key = f"{room_id}:{user}"
+            # Check and delete conversation (release lock before network I/O)
+            had_conversation = False
             with conversations_lock:
                 if conv_key in conversations:
                     del conversations[conv_key]
+                    had_conversation = True
                     logger.info(f"Cleared conversation context for {user} in room {room_id}")
-                    self.send_message(room_id, "Conversation context cleared. Starting fresh! 🔄")
-                else:
-                    self.send_message(room_id, "No conversation context to clear. Already starting fresh! ✨")
+
+            # Send response outside lock (network I/O)
+            if had_conversation:
+                self.send_message(room_id, "Conversation context cleared. Starting fresh! 🔄")
+            else:
+                self.send_message(room_id, "No conversation context to clear. Already starting fresh! ✨")
             return
 
         # Get response from Ollama
@@ -1444,7 +1449,7 @@ class RocketChatBot:
 
                     # Process oldest first (in parallel threads)
                     for message in reversed(messages):
-                        if self.should_respond(message, is_dm=False):
+                        if self.should_respond_and_claim(message, is_dm=False):
                             # Spawn thread for parallel processing
                             thread = threading.Thread(
                                 target=self.process_message,
@@ -1509,7 +1514,7 @@ class RocketChatBot:
 
                     # Process oldest first (in parallel threads)
                     for message in reversed(messages):
-                        if self.should_respond(message, is_dm=True):
+                        if self.should_respond_and_claim(message, is_dm=True):
                             # Spawn thread for parallel processing
                             thread = threading.Thread(
                                 target=self.process_message,
