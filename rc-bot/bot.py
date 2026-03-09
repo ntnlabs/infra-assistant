@@ -76,6 +76,7 @@ DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 # Ollama model settings
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "2048"))
+MAX_OLLAMA_ITERATIONS = min(int(os.environ.get("MAX_OLLAMA_ITERATIONS", "5")), 25)  # Hard cap at 25
 
 # =============================================================================
 # Logging Setup
@@ -1160,7 +1161,7 @@ class RocketChatBot:
         messages.extend(history)
         messages.append({"role": "user", "content": text})
 
-        max_iterations = 5  # Prevent infinite loops
+        max_iterations = MAX_OLLAMA_ITERATIONS  # Prevent infinite loops
         iteration = 0
 
         try:
