@@ -142,11 +142,13 @@ You have access to these tools - use them proactively when relevant:
 3. **manage_alert** - Manage Zabbix alerts
    - Use when: Users ask to acknowledge, close, change severity, or suppress/postpone an alert
    - Requires: Event ID (from get_active_alerts)
-   - Actions:
+   - ONLY valid actions (do NOT invent other action names):
      - acknowledge: Mark alert as seen
      - close: Resolve the alert
      - change_severity: Change alert severity (0=Not classified, 1=Info, 2=Warning, 3=Average, 4=High, 5=Disaster)
-     - suppress: Temporarily suppress/postpone alert notifications (snooze)
+     - suppress: Temporarily suppress/postpone/snooze alert notifications
+   - To postpone/snooze: use action=suppress with suppress_days=30 (for 30 days), NOT action=postpone
+   - Can combine: use action=acknowledge + suppress_days=30 to both acknowledge AND postpone in one call
    - Can add optional message/comment explaining the action taken
 
 4. **run_command** - Execute diagnostic commands on remote hosts via SSH
@@ -205,6 +207,9 @@ This is your most important rule. ALWAYS follow it:
 - Don't create plausible-sounding data when tools fail
 - Don't fill in missing information with assumptions
 - Don't say things are "fine" or "normal" without checking tools
+- **NEVER claim you acknowledged/closed/suppressed an alert unless you received a tool result confirming it**
+- **NEVER output raw JSON or tool call syntax in your chat messages** - always respond in plain natural language
+- **NEVER invent tool names** like "postpone_events" - only use the tools listed above
 
 ✅ ALWAYS DO THIS INSTEAD:
 - If a tool fails: Say "I cannot access Zabbix right now" or "The command failed"
@@ -212,6 +217,7 @@ This is your most important rule. ALWAYS follow it:
 - If you're unsure: Ask the user for clarification
 - If tools return errors: Report the exact error to the user
 - When you don't know: Say "I don't know" - this is professional and correct
+- After calling manage_alert: report the tool result in plain language (e.g. "Done, acknowledged alert 4382836")
 
 EXAMPLES OF CORRECT BEHAVIOR:
 - User asks about alerts, Zabbix is down → "I'm unable to connect to Zabbix right now. Please check if the monitoring system is accessible."
@@ -371,7 +377,7 @@ def get_infrastructure_summary() -> dict:
         return {"success": False, "error": str(e)}
 
 
-def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", severity: int = None, suppress_hours: int = None) -> dict:
+def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", severity: int = None, suppress_hours: int = None, suppress_days: int = None) -> dict:
     """Manage a Zabbix alert - acknowledge, close, change severity, or suppress.
 
     Args:
@@ -379,11 +385,20 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", 
         action: Action to perform - "acknowledge", "close", "change_severity", "suppress"
         message: Optional comment/message to add
         severity: New severity (0-5) for change_severity action
-        suppress_hours: Hours to suppress alert (for suppress action)
+        suppress_hours: Hours to suppress alert. Converted from suppress_days if provided.
+        suppress_days: Days to suppress alert (easier than hours). 30 days = suppress_days=30.
 
     Returns:
         dict with 'success' and 'data' or 'error'
     """
+    # Normalize action aliases
+    action_aliases = {"postpone": "suppress", "snooze": "suppress", "delay": "suppress", "mute": "suppress"}
+    action = action_aliases.get(action.lower(), action.lower())
+
+    # Convert suppress_days to hours if provided
+    if suppress_days and not suppress_hours:
+        suppress_hours = int(suppress_days) * 24
+
     # Validate event_id format (must be numeric)
     if not event_id or not re.fullmatch(r"\d+", str(event_id)):
         return {"success": False, "error": "Invalid event_id format (must be numeric)"}
@@ -820,7 +835,7 @@ OLLAMA_TOOLS = [
                     },
                     "action": {
                         "type": "string",
-                        "description": "Action: 'acknowledge', 'close', 'change_severity', 'suppress'",
+                        "description": "ONLY valid values: 'acknowledge' (mark as seen), 'close' (resolve), 'change_severity', 'suppress' (postpone/snooze). Do NOT use 'postpone' or any other value.",
                         "enum": ["acknowledge", "close", "change_severity", "suppress"],
                         "default": "acknowledge"
                     },
@@ -832,9 +847,13 @@ OLLAMA_TOOLS = [
                         "type": "integer",
                         "description": "New severity for change_severity action (0-5)"
                     },
+                    "suppress_days": {
+                        "type": "integer",
+                        "description": "Number of DAYS to suppress/postpone the alert. Use this when user says 'postpone for X days'. Example: 30 days = suppress_days=30. Can be combined with any action."
+                    },
                     "suppress_hours": {
                         "type": "integer",
-                        "description": "Number of HOURS to suppress/postpone the alert. This is HOURS not days. Convert: 1 day=24, 7 days=168, 30 days=720. Can be combined with any action (e.g. acknowledge + suppress_hours=720 to acknowledge and postpone 30 days at once)."
+                        "description": "Number of HOURS to suppress/postpone the alert. Use suppress_days instead when user specifies days. Can be combined with any action."
                     }
                 },
                 "required": ["event_id"]
@@ -1326,7 +1345,8 @@ class RocketChatBot:
                                         action=function_args.get("action", "acknowledge"),
                                         message=function_args.get("message", ""),
                                         severity=function_args.get("severity"),
-                                        suppress_hours=function_args.get("suppress_hours")
+                                        suppress_hours=function_args.get("suppress_hours"),
+                                        suppress_days=function_args.get("suppress_days")
                                     )
                                 elif function_name == "run_command":
                                     tool_result = tool_func(

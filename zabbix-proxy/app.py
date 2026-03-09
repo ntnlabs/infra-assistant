@@ -566,42 +566,52 @@ def acknowledge_event():
         if action_value is None:
             return jsonify({"error": f"Invalid action: {action_type}"}), 400
 
-        # If message provided, always add message flag (4)
+        # If message provided, add message flag (4)
         if message:
             action_value |= 4
 
-        # If suppress_until provided, always add suppress flag (32) regardless of primary action
-        # This allows e.g. acknowledge (2) + suppress (32) = 34 in one Zabbix call
-        if suppress_until:
-            action_value |= 32
-
-        # Call Zabbix API
+        # Call primary action (acknowledge, close, change_severity, etc.)
         params = {
             "eventids": event_ids,
             "action": action_value
         }
-
         if message:
             params["message"] = message
-
         if action_type == "change_severity":
             if severity is None:
                 return jsonify({"error": "severity required for change_severity action"}), 400
             params["severity"] = int(severity)
-
-        if suppress_until:
+        if action_type == "suppress" and suppress_until:
             params["suppress_until"] = int(suppress_until)
 
         result = zabbix._call("event.acknowledge", params)
+        if not result:
+            return jsonify({"error": "Failed to perform action"}), 500
 
-        if result:
-            return jsonify({
-                "success": True,
-                "event_ids": result.get("eventids", []),
-                "message": f"Successfully {action_type}d {len(event_ids)} event(s)"
-            })
-        else:
-            return jsonify({"error": "Failed to acknowledge events"}), 500
+        # If suppress_until provided with a non-suppress primary action, make a second call
+        # (combining bitmasks in one call is unreliable across Zabbix versions)
+        suppress_result = None
+        if suppress_until and action_type != "suppress":
+            suppress_params = {
+                "eventids": event_ids,
+                "action": 32,  # suppress only
+                "suppress_until": int(suppress_until)
+            }
+            suppress_result = zabbix._call("event.acknowledge", suppress_params)
+            if not suppress_result:
+                return jsonify({
+                    "success": True,
+                    "partial": True,
+                    "event_ids": result.get("eventids", []),
+                    "message": f"Successfully {action_type}d {len(event_ids)} event(s) but suppress failed"
+                })
+
+        return jsonify({
+            "success": True,
+            "event_ids": result.get("eventids", []),
+            "message": f"Successfully {action_type}d {len(event_ids)} event(s)"
+                       + (f" and suppressed until {suppress_until}" if suppress_result else "")
+        })
 
     except Exception as e:
         logger.error(f"Error acknowledging events: {e}")
