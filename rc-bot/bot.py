@@ -1394,10 +1394,10 @@ class RocketChatBot:
 
         Note: Message is already claimed by should_respond_and_claim() before this runs.
         """
+        user = message.get("u", {}).get("username", "unknown")  # Needed in except too
         try:
             # Extract info
             text = self.get_message_text(message, is_dm=is_dm)
-            user = message.get("u", {}).get("username", "unknown")
 
             if not text:
                 return
