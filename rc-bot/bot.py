@@ -277,38 +277,64 @@ Remember: Your goal is to help the operations team work efficiently by providing
 # Tools
 # =============================================================================
 
-def get_active_alerts(min_severity: int = 3, limit: int = 25) -> dict:
-    """Get active alerts from Zabbix.
+def get_active_alerts(min_severity: int = 0, limit: int = 25, host: str = "") -> dict:
+    """Get active alerts from Zabbix, optionally filtered by hostname.
 
     Args:
-        min_severity: Minimum severity (0-5). Default 3 (Average).
+        min_severity: Minimum severity (0-5). Default 0 (all severities).
         limit: Max number of alerts to return.
+        host: Optional hostname to filter alerts for a specific host.
 
     Returns:
         dict with 'success' and 'data' or 'error'
     """
+    severity_names = ["Not classified", "Information", "Warning", "Average", "High", "Disaster"]
+
     try:
-        response = requests.get(
-            f"{ZABBIX_PROXY_URL}/problems",
-            headers={"Authorization": f"Bearer {ZABBIX_PROXY_TOKEN}"},
-            params={"severity": min_severity, "limit": limit},
-            timeout=30
-        )
-        response.raise_for_status()
-        data = response.json()
-        problems = data.get("problems", [])
+        hostname = host.strip() if host else ""
 
-        if not problems:
-            return {"success": True, "data": "No active alerts found."}
+        if hostname:
+            # Use host-specific endpoint
+            response = requests.get(
+                f"{ZABBIX_PROXY_URL}/host/{hostname}/problems",
+                headers={"Authorization": f"Bearer {ZABBIX_PROXY_TOKEN}"},
+                timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+            problems = data.get("problems", [])
 
-        # Format for readability (include event ID so Bob can close/acknowledge by description)
-        result = f"Found {len(problems)} active alerts:\n\n"
-        for p in problems[:limit]:
-            severity = p.get("severity", 0)
-            severity_names = ["Not classified", "Information", "Warning", "Average", "High", "Disaster"]
-            sev_name = severity_names[severity] if 0 <= severity <= 5 else "Unknown"
-            eventid = p.get('eventid', 'unknown')
-            result += f"[{sev_name}] {p.get('name', 'Unknown')} on {p.get('hostname', 'Unknown')} (ID: {eventid})\n"
+            if not problems:
+                return {"success": True, "data": f"No active alerts found for host '{hostname}'."}
+
+            result = f"Found {len(problems)} active alerts for host '{hostname}':\n\n"
+            for p in problems[:limit]:
+                severity = p.get("severity", 0)
+                sev_name = severity_names[severity] if 0 <= severity <= 5 else "Unknown"
+                eventid = p.get('eventid', 'unknown')
+                ack = " [ACK]" if p.get("acknowledged") else ""
+                result += f"[{sev_name}]{ack} {p.get('name', 'Unknown')} (ID: {eventid})\n"
+        else:
+            # All hosts
+            response = requests.get(
+                f"{ZABBIX_PROXY_URL}/problems",
+                headers={"Authorization": f"Bearer {ZABBIX_PROXY_TOKEN}"},
+                params={"severity": min_severity, "limit": limit},
+                timeout=30
+            )
+            response.raise_for_status()
+            data = response.json()
+            problems = data.get("problems", [])
+
+            if not problems:
+                return {"success": True, "data": "No active alerts found."}
+
+            result = f"Found {len(problems)} active alerts:\n\n"
+            for p in problems[:limit]:
+                severity = p.get("severity", 0)
+                sev_name = severity_names[severity] if 0 <= severity <= 5 else "Unknown"
+                eventid = p.get('eventid', 'unknown')
+                result += f"[{sev_name}] {p.get('name', 'Unknown')} on {p.get('hostname', 'Unknown')} (ID: {eventid})\n"
 
         return {"success": True, "data": result}
 
@@ -744,19 +770,23 @@ OLLAMA_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_active_alerts",
-            "description": "Get current active alerts from Zabbix monitoring system. Use this when users ask about problems, alerts, or issues.",
+            "description": "Get current active alerts from Zabbix monitoring system. Use this when users ask about problems, alerts, or issues. IMPORTANT: Use min_severity=0 by default to show ALL alerts unless the user explicitly asks to filter by severity (e.g. 'only high alerts').",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "min_severity": {
                         "type": "integer",
-                        "description": "Minimum severity level (0=Not classified, 1=Info, 2=Warning, 3=Average, 4=High, 5=Disaster)",
-                        "default": 3
+                        "description": "Minimum severity level. Default 0 = ALL severities. Only increase this if user explicitly asks to filter (e.g. 'high alerts only' = 4). Values: 0=All, 1=Info, 2=Warning, 3=Average, 4=High, 5=Disaster",
+                        "default": 0
                     },
                     "limit": {
                         "type": "integer",
                         "description": "Maximum number of alerts to return",
                         "default": 25
+                    },
+                    "host": {
+                        "type": "string",
+                        "description": "Optional: filter alerts for a specific hostname (e.g. 'ex1.tca'). Leave empty for all hosts."
                     }
                 },
                 "required": []
@@ -1283,8 +1313,9 @@ class RocketChatBot:
                                 # Call the tool with unpacked arguments
                                 if function_name == "get_active_alerts":
                                     tool_result = tool_func(
-                                        min_severity=function_args.get("min_severity", 3),
-                                        limit=function_args.get("limit", 25)
+                                        min_severity=function_args.get("min_severity", 0),
+                                        limit=function_args.get("limit", 25),
+                                        host=function_args.get("host", "")
                                     )
                                 elif function_name == "get_infrastructure_summary":
                                     tool_result = tool_func()
