@@ -566,9 +566,14 @@ def acknowledge_event():
         if action_value is None:
             return jsonify({"error": f"Invalid action: {action_type}"}), 400
 
-        # If message provided, add message flag
-        if message and action_value in [1, 2, 8, 32]:
-            action_value += 4
+        # If message provided, always add message flag (4)
+        if message:
+            action_value |= 4
+
+        # If suppress_until provided, always add suppress flag (32) regardless of primary action
+        # This allows e.g. acknowledge (2) + suppress (32) = 34 in one Zabbix call
+        if suppress_until:
+            action_value |= 32
 
         # Call Zabbix API
         params = {
@@ -584,9 +589,8 @@ def acknowledge_event():
                 return jsonify({"error": "severity required for change_severity action"}), 400
             params["severity"] = int(severity)
 
-        if action_type == "suppress":
-            if suppress_until:
-                params["suppress_until"] = int(suppress_until)
+        if suppress_until:
+            params["suppress_until"] = int(suppress_until)
 
         result = zabbix._call("event.acknowledge", params)
 
