@@ -21,8 +21,11 @@ import os
 import re
 import sys
 import time
+import signal
 import logging
 import threading
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -100,8 +103,8 @@ logger = logging.getLogger(__name__)
 conversations: dict = {}
 MAX_CONVERSATIONS = 500  # Prevent unbounded memory growth
 
-# Track processed message IDs to avoid duplicates
-processed_messages: set = set()
+# Track processed message IDs to avoid duplicates (OrderedDict for FIFO cleanup)
+processed_messages: OrderedDict = OrderedDict()
 MAX_PROCESSED_MESSAGES = 10000
 
 # Threading: Limit concurrent Ollama calls (VRAM constraint)
@@ -109,6 +112,7 @@ MAX_PROCESSED_MESSAGES = 10000
 ollama_semaphore = None  # Will be set in main()
 conversations_lock = threading.Lock()  # Thread-safe conversation access
 processed_messages_lock = threading.Lock()  # Thread-safe processed messages
+shutdown_event = threading.Event()  # Graceful shutdown signal
 
 # System prompt for the bot
 SYSTEM_PROMPT = """You are Bob, an infrastructure monitoring and operations assistant for the IT operations team.
@@ -983,6 +987,13 @@ class RocketChatBot:
         self.last_dm_refresh: Optional[datetime] = None
         self.first_poll_done: set = set()  # Track rooms that have been polled once
 
+        # ThreadPoolExecutor for message processing
+        # max_workers = 2x concurrency to allow queuing while Ollama calls are in flight
+        self.executor = ThreadPoolExecutor(
+            max_workers=MAX_OLLAMA_CONCURRENCY * 2,
+            thread_name_prefix="msg_worker_"
+        )
+
     def connect(self) -> bool:
         """Connect to Rocket.Chat server."""
         try:
@@ -1080,13 +1091,11 @@ class RocketChatBot:
             if msg_id in processed_messages:
                 return False
             # Claim message immediately (before spawning thread)
-            processed_messages.add(msg_id)
+            processed_messages[msg_id] = True  # OrderedDict tracks insertion order
 
-            # Cleanup old processed messages while we have the lock
-            if len(processed_messages) > MAX_PROCESSED_MESSAGES:
-                to_remove = list(processed_messages)[:MAX_PROCESSED_MESSAGES // 2]
-                for item in to_remove:
-                    processed_messages.discard(item)
+            # Cleanup old processed messages (FIFO - oldest first)
+            while len(processed_messages) > MAX_PROCESSED_MESSAGES:
+                processed_messages.popitem(last=False)  # Remove oldest
 
         # Skip own messages
         sender = message.get("u", {}).get("username", "")
@@ -1385,42 +1394,50 @@ class RocketChatBot:
 
         Note: Message is already claimed by should_respond_and_claim() before this runs.
         """
-        # Extract info
-        text = self.get_message_text(message, is_dm=is_dm)
-        user = message.get("u", {}).get("username", "unknown")
+        try:
+            # Extract info
+            text = self.get_message_text(message, is_dm=is_dm)
+            user = message.get("u", {}).get("username", "unknown")
 
-        if not text:
-            return
+            if not text:
+                return
 
-        msg_type = "DM" if is_dm else "channel"
-        logger.info(f"[{msg_type}] Message from {user}: {text[:100]}...")
+            msg_type = "DM" if is_dm else "channel"
+            logger.info(f"[{msg_type}] Message from {user}: {text[:100]}...")
 
-        # Check for context reset command (check if ANY reset keyword is in the text)
-        text_lower = text.lower().strip()
-        reset_keywords = ["reset", "forget", "clear", "reset context", "forget conversation", "start over"]
-        if any(keyword == text_lower or text_lower.endswith(f" {keyword}") or text_lower.startswith(f"{keyword} ") for keyword in reset_keywords):
-            conv_key = f"{room_id}:{user}"
-            # Check and delete conversation (release lock before network I/O)
-            had_conversation = False
-            with conversations_lock:
-                if conv_key in conversations:
-                    del conversations[conv_key]
-                    had_conversation = True
-                    logger.info(f"Cleared conversation context for {user} in room {room_id}")
+            # Check for context reset command (check if ANY reset keyword is in the text)
+            text_lower = text.lower().strip()
+            reset_keywords = ["reset", "forget", "clear", "reset context", "forget conversation", "start over"]
+            if any(keyword == text_lower or text_lower.endswith(f" {keyword}") or text_lower.startswith(f"{keyword} ") for keyword in reset_keywords):
+                conv_key = f"{room_id}:{user}"
+                # Check and delete conversation (release lock before network I/O)
+                had_conversation = False
+                with conversations_lock:
+                    if conv_key in conversations:
+                        del conversations[conv_key]
+                        had_conversation = True
+                        logger.info(f"Cleared conversation context for {user} in room {room_id}")
 
-            # Send response outside lock (network I/O)
-            if had_conversation:
-                self.send_message(room_id, "Conversation context cleared. Starting fresh! 🔄")
-            else:
-                self.send_message(room_id, "No conversation context to clear. Already starting fresh! ✨")
-            return
+                # Send response outside lock (network I/O)
+                if had_conversation:
+                    self.send_message(room_id, "Conversation context cleared. Starting fresh! 🔄")
+                else:
+                    self.send_message(room_id, "No conversation context to clear. Already starting fresh! ✨")
+                return
 
-        # Get response from Ollama
-        response = self.call_ollama(text, room_id, user)
+            # Get response from Ollama
+            response = self.call_ollama(text, room_id, user)
 
-        # Send response
-        self.send_message(room_id, response)
-        logger.info(f"Sent response ({len(response)} chars)")
+            # Send response
+            self.send_message(room_id, response)
+            logger.info(f"Sent response ({len(response)} chars)")
+
+        except Exception as e:
+            logger.exception(f"Fatal error processing message from {user}: {e}")
+            try:
+                self.send_message(room_id, "⚠️ An internal error occurred while processing your request. Please try again or contact the team if the issue persists.")
+            except:
+                pass  # Best effort
 
     def poll_messages(self):
         """Poll for new messages in all monitored rooms."""
@@ -1443,20 +1460,15 @@ class RocketChatBot:
                             for message in messages:
                                 msg_id = message.get("_id", "")
                                 if msg_id:
-                                    processed_messages.add(msg_id)
+                                    processed_messages[msg_id] = True
                         self.first_poll_done.add(room_id)
                         continue
 
-                    # Process oldest first (in parallel threads)
+                    # Process oldest first (using ThreadPoolExecutor)
                     for message in reversed(messages):
                         if self.should_respond_and_claim(message, is_dm=False):
-                            # Spawn thread for parallel processing
-                            thread = threading.Thread(
-                                target=self.process_message,
-                                args=(message, room_id, False),
-                                daemon=True
-                            )
-                            thread.start()
+                            # Submit to thread pool for parallel processing
+                            self.executor.submit(self.process_message, message, room_id, False)
 
             except Exception as e:
                 logger.error(f"Error polling {channel_name}: {e}")
@@ -1496,7 +1508,7 @@ class RocketChatBot:
                                 # Messages older than 60 seconds: mark as seen, don't process (backlog)
                                 if age_seconds > 60:
                                     with processed_messages_lock:
-                                        processed_messages.add(msg_id)
+                                        processed_messages[msg_id] = True
                                     old_count += 1
                                 else:
                                     # Recent message: process normally
@@ -1505,26 +1517,28 @@ class RocketChatBot:
                                 # Can't parse timestamp: assume old, mark as seen
                                 logger.warning(f"Failed to parse timestamp '{msg_time_str}': {e}")
                                 with processed_messages_lock:
-                                    processed_messages.add(msg_id)
+                                    processed_messages[msg_id] = True
                                 old_count += 1
 
                         logger.info(f"First poll of DM {room_id}: marked {old_count} old messages as seen, will process {recent_count} recent")
                         self.first_poll_done.add(dm_key)
                         # Don't continue - fall through to process recent messages
 
-                    # Process oldest first (in parallel threads)
+                    # Process oldest first (using ThreadPoolExecutor)
                     for message in reversed(messages):
                         if self.should_respond_and_claim(message, is_dm=True):
-                            # Spawn thread for parallel processing
-                            thread = threading.Thread(
-                                target=self.process_message,
-                                args=(message, room_id, True),
-                                daemon=True
-                            )
-                            thread.start()
+                            # Submit to thread pool for parallel processing
+                            self.executor.submit(self.process_message, message, room_id, True)
 
             except Exception as e:
                 logger.debug(f"Error polling DM {room_id}: {e}")
+
+    def shutdown(self):
+        """Shutdown bot gracefully, waiting for in-flight work."""
+        logger.info("Shutting down bot...")
+        logger.info("Waiting for in-flight message processing to complete...")
+        self.executor.shutdown(wait=True)
+        logger.info("Bot shutdown complete")
 
     def run(self):
         """Main bot loop."""
@@ -1545,7 +1559,7 @@ class RocketChatBot:
         reconnect_attempts = 0
         max_reconnect = 5
 
-        while True:
+        while not shutdown_event.is_set():
             try:
                 self.poll_messages()
                 self.refresh_dm_rooms()
@@ -1565,6 +1579,9 @@ class RocketChatBot:
                         time.sleep(30)
 
             time.sleep(POLL_INTERVAL)
+
+        # Graceful shutdown
+        self.shutdown()
 
 
 # =============================================================================
@@ -1602,9 +1619,20 @@ def validate_config() -> bool:
     return True
 
 
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully."""
+    sig_name = signal.Signals(signum).name
+    logger.info(f"Received {sig_name}, initiating graceful shutdown...")
+    shutdown_event.set()
+
+
 def main():
     """Entry point."""
     global ollama_semaphore
+
+    # Setup signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     if not validate_config():
         sys.exit(1)
