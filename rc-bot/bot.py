@@ -399,6 +399,12 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", 
     if suppress_days and not suppress_hours:
         suppress_hours = int(suppress_days) * 24
 
+    # If a suppress duration is given with any non-suppress action, always also acknowledge.
+    # This way it doesn't matter if the model picks action=suppress or action=acknowledge —
+    # both acknowledge AND suppress will happen as long as suppress_days/suppress_hours is set.
+    if suppress_hours and action == "suppress":
+        action = "acknowledge"  # proxy will then make two calls: acknowledge + suppress
+
     # Validate event_id format (must be numeric)
     if not event_id or not re.fullmatch(r"\d+", str(event_id)):
         return {"success": False, "error": "Invalid event_id format (must be numeric)"}
