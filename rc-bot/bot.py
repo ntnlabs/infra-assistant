@@ -1244,7 +1244,8 @@ class RocketChatBot:
         history = self.get_conversation_history(room_id, user)
 
         # Build messages array
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        messages = [{"role": "system", "content": f"Current date and time: {now_str}\n\n{SYSTEM_PROMPT}"}]
         messages.extend(history)
         messages.append({"role": "user", "content": text})
 
