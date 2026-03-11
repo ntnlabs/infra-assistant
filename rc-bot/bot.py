@@ -26,7 +26,7 @@ import logging
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -405,6 +405,10 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", 
     # Convert suppress_days to hours if provided
     if suppress_days and not suppress_hours:
         suppress_hours = int(suppress_days) * 24
+
+    # Validate suppress duration is positive
+    if suppress_hours is not None and int(suppress_hours) <= 0:
+        return {"success": False, "error": "suppress_hours must be a positive number"}
 
     # Suppress requires a duration — reject if none provided
     if action == "suppress" and not suppress_hours:
@@ -1094,7 +1098,6 @@ class RocketChatBot:
         self.dm_room_ids: set = set()  # DM room IDs
         self.last_dm_refresh: Optional[datetime] = None
         self.first_poll_done: set = set()  # Track rooms that have been polled once
-        from datetime import timezone
         self.start_time = datetime.now(timezone.utc)  # Used to skip pre-startup DM messages
 
         # ThreadPoolExecutor for message processing
@@ -1161,7 +1164,7 @@ class RocketChatBot:
     def refresh_dm_rooms(self, force: bool = False):
         """Refresh DM room list periodically so new DMs are discovered."""
         if not force and DM_REFRESH_INTERVAL > 0 and self.last_dm_refresh:
-            elapsed = (datetime.now() - self.last_dm_refresh).total_seconds()
+            elapsed = (datetime.now(timezone.utc) - self.last_dm_refresh).total_seconds()
             if elapsed < DM_REFRESH_INTERVAL:
                 return
 
@@ -1184,13 +1187,13 @@ class RocketChatBot:
                     logger.info(f"Removed {len(removed)} DM room(s) no longer visible")
 
                 self.dm_room_ids = new_dm_room_ids
-                self.last_dm_refresh = datetime.now()
+                self.last_dm_refresh = datetime.now(timezone.utc)
 
                 if force and self.dm_room_ids:
                     logger.info(f"Monitoring {len(self.dm_room_ids)} DM conversations")
         except Exception as e:
             logger.warning(f"Could not refresh DM rooms: {e}")
-            self.last_dm_refresh = datetime.now()
+            self.last_dm_refresh = datetime.now(timezone.utc)
 
     def should_respond_and_claim(self, message: dict, is_dm: bool = False) -> bool:
         """Check if bot should respond AND atomically claim message. Thread-safe."""
@@ -1251,7 +1254,7 @@ class RocketChatBot:
 
                 # Check if conversation is still active
                 if CONVERSATION_TIMEOUT > 0:
-                    elapsed = datetime.now() - conv["last_activity"]
+                    elapsed = datetime.now(timezone.utc) - conv["last_activity"]
                     if elapsed > timedelta(seconds=CONVERSATION_TIMEOUT):
                         logger.info(f"Conversation expired for {user} in room {room_id}")
                         del conversations[conv_key]
@@ -1270,13 +1273,13 @@ class RocketChatBot:
             if conv_key not in conversations:
                 conversations[conv_key] = {
                     "messages": [],
-                    "last_activity": datetime.now()
+                    "last_activity": datetime.now(timezone.utc)
                 }
 
             # Add messages to history
             conversations[conv_key]["messages"].append({"role": "user", "content": user_msg})
             conversations[conv_key]["messages"].append({"role": "assistant", "content": assistant_msg})
-            conversations[conv_key]["last_activity"] = datetime.now()
+            conversations[conv_key]["last_activity"] = datetime.now(timezone.utc)
 
             # Keep only last 20 messages (10 exchanges)
             if len(conversations[conv_key]["messages"]) > 20:
@@ -1296,7 +1299,7 @@ class RocketChatBot:
         history = self.get_conversation_history(room_id, user)
 
         # Build messages array
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         messages = [{"role": "system", "content": f"Current date and time: {now_str}\n\n{SYSTEM_PROMPT}"}]
         messages.extend(history)
         messages.append({"role": "user", "content": text})
@@ -1474,8 +1477,11 @@ class RocketChatBot:
                                 else:
                                     logger.error(f"Tool {function_name} failed: {tool_result.get('error', 'Unknown error')}")
 
-                                # Audit log — skip read-only and self-referential tools
-                                if function_name not in ("query_audit_log", "get_help"):
+                                # Audit log — skip read-only tools; only record state-changing actions
+                                if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
+                                                         "get_infrastructure_summary", "get_slurm_nodes",
+                                                         "get_slurm_jobs", "get_slurm_job_details",
+                                                         "get_slurm_job_history"):
                                     audit.log_action(
                                         room_id=room_id,
                                         user=user,
@@ -1492,6 +1498,19 @@ class RocketChatBot:
                                     "role": "tool",
                                     "content": f"❌ ERROR: Tool execution failed: {str(e)}"
                                 })
+                                if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
+                                                         "get_infrastructure_summary", "get_slurm_nodes",
+                                                         "get_slurm_jobs", "get_slurm_job_details",
+                                                         "get_slurm_job_history"):
+                                    audit.log_action(
+                                        room_id=room_id,
+                                        user=user,
+                                        tool_name=function_name,
+                                        args=function_args,
+                                        success=False,
+                                        result_text=f"Exception: {e}",
+                                        user_prompt=text,
+                                    )
 
                         else:
                             logger.error(f"Tool function not found: {function_name}")
