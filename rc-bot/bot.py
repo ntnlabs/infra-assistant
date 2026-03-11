@@ -1464,7 +1464,7 @@ class RocketChatBot:
                                     # Prepend strong instruction to present the data
                                     tool_message = {
                                         "role": "tool",
-                                        "content": f"TOOL RESULT - SHOW THIS COMPLETE DATA TO THE USER. DO NOT SUMMARIZE. Copy the entire JSON output below as-is:\n\n{result_data}"
+                                        "content": f"Tool result:\n\n{result_data}"
                                     }
                                 else:
                                     # Tool failed - make error very clear
@@ -1525,9 +1525,78 @@ class RocketChatBot:
                     # Continue loop to let Ollama process tool results
                     continue
 
-                # No tool calls - this is the final answer
+                # No native tool calls — check if model emitted tool calls as plain text JSON
+                elif content:
+                    parsed_text_tools = []
+                    try:
+                        stripped = content.strip()
+                        if stripped.startswith("[") or stripped.startswith("{"):
+                            parsed = json_lib.loads(stripped)
+                            if isinstance(parsed, dict):
+                                parsed = [parsed]
+                            if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "name" in parsed[0]:
+                                parsed_text_tools = parsed
+                    except Exception:
+                        pass
+
+                    if parsed_text_tools:
+                        logger.warning(f"Model emitted {len(parsed_text_tools)} tool call(s) as plain text — executing anyway")
+                        # Inject as synthetic tool_calls so the existing loop handles them
+                        synthetic = [{"function": {"name": t["name"], "arguments": t.get("arguments", {})}} for t in parsed_text_tools]
+                        messages.append({"role": "assistant", "content": "", "tool_calls": synthetic})
+                        tool_calls = synthetic
+                        # Re-run tool execution block by jumping back to top of loop
+                        # We fake the response structure so the next iteration picks it up
+                        # Instead, execute inline by re-entering via continue after appending
+                        # Simplest: just replace tool_calls and fall through to execution above
+                        # — restructure: set tool_calls and redo the tool execution here
+                        for tool_call in synthetic:
+                            function_name = tool_call["function"]["name"]
+                            function_args = tool_call["function"]["arguments"]
+                            if isinstance(function_args, str):
+                                try:
+                                    function_args = json_lib.loads(function_args)
+                                except Exception:
+                                    function_args = {}
+                            if not isinstance(function_args, dict):
+                                function_args = {}
+
+                            call_key = (function_name, json_lib.dumps(function_args, sort_keys=True))
+                            if call_key in executed_tool_calls:
+                                messages.append({"role": "tool", "content": "⚠️ Already called. Use earlier result."})
+                                continue
+
+                            logger.info(f"Executing text-fallback tool: {function_name} with args: {function_args}")
+                            tool_func = TOOL_FUNCTIONS.get(function_name)
+                            if not tool_func:
+                                messages.append({"role": "tool", "content": f"❌ ERROR: Tool '{function_name}' not found"})
+                                continue
+                            try:
+                                tool_result = tool_func(**{k: v for k, v in function_args.items()})
+                                if tool_result.get("success"):
+                                    executed_tool_calls.add(call_key)
+                                    messages.append({"role": "tool", "content": f"Tool result:\n\n{tool_result.get('data', 'No data returned')}"})
+                                else:
+                                    messages.append({"role": "tool", "content": f"❌ ERROR: {tool_result.get('error', 'Unknown error')}"})
+                                if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
+                                                         "get_infrastructure_summary", "get_slurm_nodes",
+                                                         "get_slurm_jobs", "get_slurm_job_details",
+                                                         "get_slurm_job_history"):
+                                    audit.log_action(room_id=room_id, user=user, tool_name=function_name,
+                                                     args=function_args, success=bool(tool_result.get("success")),
+                                                     result_text=str(tool_result.get("data") or tool_result.get("error", "")),
+                                                     user_prompt=text)
+                            except Exception as e:
+                                logger.error(f"Text-fallback tool {function_name} raised: {e}")
+                                messages.append({"role": "tool", "content": f"❌ ERROR: Tool execution failed: {e}"})
+                        continue  # Let Ollama summarise the tool results
+
+                    # Genuine final answer
+                    self.update_conversation(room_id, user, text, content)
+                    return content
+
                 else:
-                    # Update conversation history
+                    # Empty content, no tool calls
                     self.update_conversation(room_id, user, text, content)
                     return content or "No response from assistant."
 
