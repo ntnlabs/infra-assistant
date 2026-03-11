@@ -81,7 +81,7 @@ DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 
 # Ollama model settings
 OLLAMA_TEMPERATURE = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
-OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "2048"))
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
 MAX_OLLAMA_ITERATIONS = min(int(os.environ.get("MAX_OLLAMA_ITERATIONS", "5")), 25)  # Hard cap at 25
 MAX_OLLAMA_CONCURRENCY = max(1, min(int(os.environ.get("MAX_OLLAMA_CONCURRENCY", "3")), 10))  # Range: 1-10
 
@@ -406,6 +406,10 @@ def manage_alert(event_id: str, action: str = "acknowledge", message: str = "", 
     if suppress_days and not suppress_hours:
         suppress_hours = int(suppress_days) * 24
 
+    # Suppress requires a duration — reject if none provided
+    if action == "suppress" and not suppress_hours:
+        return {"success": False, "error": "suppress requires a duration (suppress_hours or suppress_days). Ask the user how long to suppress the alert."}
+
     # If a suppress duration is given with any non-suppress action, always also acknowledge.
     # This way it doesn't matter if the model picks action=suppress or action=acknowledge —
     # both acknowledge AND suppress will happen as long as suppress_days/suppress_hours is set.
@@ -578,6 +582,11 @@ def run_command(host: str, command: str) -> dict:
     Returns:
         dict with 'success' and 'data' or 'error'
     """
+    if not host:
+        return {"success": False, "error": "host is required"}
+    if not command:
+        return {"success": False, "error": "command is required"}
+
     # Map common command names to actual commands
     # Note: ssh-proxy will do final validation against commands.yaml
     COMMAND_MAP = {
@@ -1368,10 +1377,9 @@ class RocketChatBot:
                             logger.warning(f"Skipping duplicate tool call: {function_name} with args {function_args}")
                             messages.append({
                                 "role": "tool",
-                                "content": f"⚠️ This tool was already called with these exact arguments and succeeded. Do not call it again. Provide your final answer to the user now."
+                                "content": f"⚠️ This tool was already called with these exact arguments in this session. Do not call it again. Use the earlier result and provide your final answer to the user now."
                             })
                             continue
-                        executed_tool_calls.add(call_key)
 
                         logger.info(f"Executing tool: {function_name} with args: {function_args}")
 
@@ -1462,6 +1470,7 @@ class RocketChatBot:
                                 messages.append(tool_message)
                                 if tool_result.get('success'):
                                     logger.info(f"Tool {function_name} completed: success")
+                                    executed_tool_calls.add(call_key)
                                 else:
                                     logger.error(f"Tool {function_name} failed: {tool_result.get('error', 'Unknown error')}")
 
@@ -1572,7 +1581,7 @@ class RocketChatBot:
             logger.exception(f"Fatal error processing message from {user}: {e}")
             try:
                 self.send_message(room_id, "⚠️ An internal error occurred while processing your request. Please try again or contact the team if the issue persists.")
-            except:
+            except Exception:
                 pass  # Best effort
 
     def poll_messages(self):
