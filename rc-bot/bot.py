@@ -1155,6 +1155,10 @@ class RocketChatBot:
         if not self.room_ids:
             logger.warning("No channels configured - will only respond to DMs")
 
+        if not self.room_ids and not RC_DM_USERS:
+            logger.error("No channels and no DM users configured — nothing to monitor")
+            return False
+
         return True
 
     def setup_dms(self):
@@ -1207,7 +1211,7 @@ class RocketChatBot:
             processed_messages[msg_id] = True  # OrderedDict tracks insertion order
 
             # Cleanup old processed messages (FIFO - oldest first)
-            while len(processed_messages) > MAX_PROCESSED_MESSAGES:
+            if len(processed_messages) > MAX_PROCESSED_MESSAGES:
                 processed_messages.popitem(last=False)  # Remove oldest
 
         # Skip own messages
@@ -1343,7 +1347,6 @@ class RocketChatBot:
                     logger.error(f"Ollama returned {response.status_code}: {response.text}")
                     return f"Error: Ollama API returned {response.status_code}"
 
-                response.raise_for_status()
                 data = response.json()
                 elapsed = time.time() - start_time
                 logger.info(f"Ollama responded in {elapsed:.2f}s")

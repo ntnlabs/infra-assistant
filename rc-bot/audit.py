@@ -16,7 +16,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).parent / "audit.db"
+import os
+DB_PATH = Path(os.environ.get("AUDIT_DB_PATH", str(Path(__file__).parent / "audit.db")))
 RESULT_MAX_LEN = 2000   # Truncate long tool outputs stored in the DB
 
 _write_lock = threading.Lock()
@@ -113,10 +114,18 @@ def query_audit_log(
             conditions.append("user = ?")
             params.append(user)
 
-        # node/host: search inside the JSON args string
+        # node/host: search inside the JSON args string.
+        # Match complete value only: "gpu001" must be followed by a quote to avoid
+        # gpu001 matching gpu0011. JSON values end with: ", } or ]
         if node:
-            conditions.append("args_json LIKE ?")
-            params.append(f'%"{node}"%')
+            conditions.append(
+                "(args_json LIKE ? OR args_json LIKE ? OR args_json LIKE ?)"
+            )
+            params.extend([
+                f'%"{node}",%',    # "gpu001", (followed by comma)
+                f'%"{node}"}}%',   # "gpu001"} (followed by closing brace)
+                f'%"{node}"]%',    # "gpu001"] (followed by closing bracket)
+            ])
 
         where = " AND ".join(conditions)
         params.append(limit)
