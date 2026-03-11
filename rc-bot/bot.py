@@ -1099,6 +1099,8 @@ class RocketChatBot:
         self.last_dm_refresh: Optional[datetime] = None
         self.first_poll_done: set = set()  # Track rooms that have been polled once
         self.start_time = datetime.now(timezone.utc)  # Used to skip pre-startup DM messages
+        self.rc_outage_start: Optional[datetime] = None  # Set when polling starts failing
+        self.rc_consecutive_failures: int = 0
 
         # ThreadPoolExecutor for message processing
         # max_workers = 2x concurrency to allow queuing while Ollama calls are in flight
@@ -1675,6 +1677,53 @@ class RocketChatBot:
             except Exception:
                 pass  # Best effort
 
+    def _on_poll_error(self, context: str, error: Exception) -> None:
+        """Track consecutive poll failures and log appropriately."""
+        if self.rc_outage_start is None:
+            self.rc_outage_start = datetime.now(timezone.utc)
+            self.rc_consecutive_failures = 0
+            logger.warning(f"Connection outage started ({context}): {error}")
+        self.rc_consecutive_failures += 1
+        # Periodic reminder every 30 failures to avoid log spam
+        if self.rc_consecutive_failures % 30 == 0:
+            elapsed = datetime.now(timezone.utc) - self.rc_outage_start
+            logger.warning(f"Still unreachable after {elapsed} ({self.rc_consecutive_failures} consecutive failures)")
+
+    def _on_poll_success(self) -> None:
+        """Called after any successful poll. Posts recovery notice if coming back from outage."""
+        if self.rc_outage_start is None:
+            return
+
+        duration = datetime.now(timezone.utc) - self.rc_outage_start
+        total_seconds = int(duration.total_seconds())
+        failures = self.rc_consecutive_failures
+
+        # Reset state immediately so concurrent calls don't double-post
+        self.rc_outage_start = None
+        self.rc_consecutive_failures = 0
+
+        # Only notify if outage was long enough to matter (>= 60s)
+        if total_seconds < 60:
+            logger.info(f"Brief connection hiccup resolved ({total_seconds}s, {failures} failures) — not notifying")
+            return
+
+        if total_seconds >= 3600:
+            duration_str = f"{total_seconds // 3600}h {(total_seconds % 3600) // 60}m"
+        elif total_seconds >= 60:
+            duration_str = f"{total_seconds // 60}m {total_seconds % 60}s"
+        else:
+            duration_str = f"{total_seconds}s"
+
+        msg = (f"⚠️ Connection restored after {duration_str} outage (SK\u2192US VPN link). "
+               f"{failures} poll cycles missed.")
+        logger.info(f"Connection restored after {duration_str} ({failures} failures) — notifying rooms")
+
+        for room_id in self.room_ids.values():
+            try:
+                self.send_message(room_id, msg)
+            except Exception:
+                pass
+
     def poll_messages(self):
         """Poll for new messages in all monitored rooms."""
         for channel_name, room_id in self.room_ids.items():
@@ -1687,6 +1736,7 @@ class RocketChatBot:
                     result = self.rc.groups_history(room_id=room_id, count=10)
 
                 if result.ok:
+                    self._on_poll_success()
                     messages = result.json().get("messages", [])
 
                     # On first poll, just mark all messages as seen without responding
@@ -1707,6 +1757,7 @@ class RocketChatBot:
                             self.executor.submit(self.process_message, message, room_id, False)
 
             except Exception as e:
+                self._on_poll_error(channel_name, e)
                 logger.error(f"Error polling {channel_name}: {e}")
 
     def poll_dms(self):
@@ -1716,6 +1767,7 @@ class RocketChatBot:
                 result = self.rc.im_history(room_id=room_id, count=10)
 
                 if result.ok:
+                    self._on_poll_success()
                     messages = result.json().get("messages", [])
 
                     # On first poll, mark pre-startup messages as seen, process post-startup ones
@@ -1764,6 +1816,7 @@ class RocketChatBot:
                             self.executor.submit(self.process_message, message, room_id, True)
 
             except Exception as e:
+                self._on_poll_error(f"DM {room_id}", e)
                 logger.debug(f"Error polling DM {room_id}: {e}")
 
     def shutdown(self):
