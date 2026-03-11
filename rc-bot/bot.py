@@ -33,6 +33,8 @@ from typing import Optional
 import requests
 from rocketchat_API.rocketchat import RocketChat
 
+import audit
+
 # Try to load .env file
 try:
     from dotenv import load_dotenv
@@ -130,16 +132,21 @@ You help the operations team by:
 
 You have access to these tools - use them proactively when relevant:
 
-1. **get_active_alerts** - Retrieves current problems from Zabbix monitoring
+1. **query_audit_log** - Search the persistent audit log of past actions taken by this bot
+   - Use when: Users ask "when did you...", "did you drain...", "what did you do to...", "why did you...", "show me history of..."
+   - Can filter by: tool name, node/host name, username, time window
+   - Returns: Timestamped log of tool executions including the user request that triggered them
+
+2. **get_active_alerts** - Retrieves current problems from Zabbix monitoring
    - Use when: Users ask about alerts, problems, issues, or "what's wrong"
    - Returns: List of active alerts with severity and affected hosts
    - Can filter by severity level (0-5)
 
-2. **get_infrastructure_summary** - Gets overview of monitored infrastructure
+3. **get_infrastructure_summary** - Gets overview of monitored infrastructure
    - Use when: Users ask about overall status, host counts, or general health
    - Returns: Total hosts, hosts up/down, active problems, and trigger counts
 
-3. **manage_alert** - Manage Zabbix alerts
+4. **manage_alert** - Manage Zabbix alerts
    - Use when: Users ask to acknowledge, close, change severity, or suppress/postpone an alert
    - Requires: Event ID (from get_active_alerts)
    - ONLY valid actions (do NOT invent other action names):
@@ -151,17 +158,17 @@ You have access to these tools - use them proactively when relevant:
    - Can combine: use action=acknowledge + suppress_days=30 to both acknowledge AND postpone in one call
    - Can add optional message/comment explaining the action taken
 
-4. **run_command** - Execute diagnostic commands on remote hosts via SSH
+5. **run_command** - Execute diagnostic commands on remote hosts via SSH
    - Use when: Users ask to check disk space, memory, CPU, uptime on specific servers
    - Available commands: df/disk (disk space), memory/free/ram, uptime, load, cpu, processes, network, listening
    - Requires: Hostname from allowed list
    - Returns: Command output from the remote host
 
-5. **get_slurm_nodes** - Get Slurm cluster/node summary from Slurm master
+6. **get_slurm_nodes** - Get Slurm cluster/node summary from Slurm master
    - Use when: Users ask about node availability, idle/allocated/drained nodes, partition health
    - Optional: Partition filter
 
-6. **manage_slurm_node** - Check, drain, or resume a Slurm node (via audited wrapper)
+7. **manage_slurm_node** - Check, drain, or resume a Slurm node (via audited wrapper)
    - Actions:
      - check: Get status for one node
      - drain: Put node into DRAIN state (requires reason and explicit confirmation)
@@ -791,6 +798,41 @@ OLLAMA_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "query_audit_log",
+            "description": "Search the persistent audit log of past actions taken by this bot. Use when users ask 'when did you drain gpu001?', 'did you acknowledge that alert?', 'what did you do to host X?', 'show history for node Y', 'why was this drained?'. All filters are optional.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Filter by tool: manage_alert, manage_slurm_node, run_command, etc. Leave empty for all."
+                    },
+                    "node": {
+                        "type": "string",
+                        "description": "Filter by node or host name in the tool arguments, e.g. 'gpu001' or 'ex1.tca'."
+                    },
+                    "user": {
+                        "type": "string",
+                        "description": "Filter by Rocket.Chat username who requested the action."
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "description": "How many hours to look back. Default 168 (7 days).",
+                        "default": 168
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results to return. Default 20.",
+                        "default": 20
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_active_alerts",
             "description": "Get current active alerts from Zabbix monitoring system. Use this when users ask about problems, alerts, or issues. IMPORTANT: Use min_severity=0 by default to show ALL alerts unless the user explicitly asks to filter by severity (e.g. 'only high alerts').",
             "parameters": {
@@ -1016,6 +1058,7 @@ OLLAMA_TOOLS = [
 
 # Map tool names to functions
 TOOL_FUNCTIONS = {
+    "query_audit_log": audit.query_audit_log,
     "get_active_alerts": get_active_alerts,
     "get_infrastructure_summary": get_infrastructure_summary,
     "manage_alert": manage_alert,
@@ -1386,6 +1429,14 @@ class RocketChatBot:
                                         hours=function_args.get("hours", 24),
                                         limit=function_args.get("limit", 50)
                                     )
+                                elif function_name == "query_audit_log":
+                                    tool_result = tool_func(
+                                        tool_name=function_args.get("tool_name", ""),
+                                        node=function_args.get("node", ""),
+                                        user=function_args.get("user", ""),
+                                        hours=function_args.get("hours", 168),
+                                        limit=function_args.get("limit", 20),
+                                    )
                                 elif function_name == "get_help":
                                     tool_result = tool_func()
                                 else:
@@ -1413,6 +1464,18 @@ class RocketChatBot:
                                     logger.info(f"Tool {function_name} completed: success")
                                 else:
                                     logger.error(f"Tool {function_name} failed: {tool_result.get('error', 'Unknown error')}")
+
+                                # Audit log — skip read-only and self-referential tools
+                                if function_name not in ("query_audit_log", "get_help"):
+                                    audit.log_action(
+                                        room_id=room_id,
+                                        user=user,
+                                        tool_name=function_name,
+                                        args=function_args,
+                                        success=bool(tool_result.get("success")),
+                                        result_text=str(tool_result.get("data") or tool_result.get("error", "")),
+                                        user_prompt=text,
+                                    )
 
                             except Exception as e:
                                 logger.error(f"Error executing tool {function_name}: {e}")
@@ -1710,6 +1773,8 @@ def main():
     # Initialize semaphore with configured concurrency limit
     ollama_semaphore = threading.Semaphore(MAX_OLLAMA_CONCURRENCY)
     logger.info(f"Ollama concurrency limit: {MAX_OLLAMA_CONCURRENCY}")
+
+    audit.init_db()
 
     bot = RocketChatBot()
     bot.run()
