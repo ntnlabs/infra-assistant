@@ -1663,8 +1663,32 @@ class RocketChatBot:
                     self.send_message(room_id, "No conversation context to clear. Already starting fresh! ✨")
                 return
 
-            # Get response from Ollama
-            response = self.call_ollama(text, room_id, user)
+            # Show typing indicator while Ollama is thinking.
+            # The indicator expires after ~10s so refresh it every 8s in a thread.
+            typing_stop = threading.Event()
+
+            def _keep_typing():
+                try:
+                    self.rc.rooms_typing(room_id=room_id, typing=True)
+                except Exception:
+                    pass
+                while not typing_stop.wait(timeout=8):
+                    try:
+                        self.rc.rooms_typing(room_id=room_id, typing=True)
+                    except Exception:
+                        pass
+
+            typing_thread = threading.Thread(target=_keep_typing, daemon=True)
+            typing_thread.start()
+
+            try:
+                response = self.call_ollama(text, room_id, user)
+            finally:
+                typing_stop.set()
+                try:
+                    self.rc.rooms_typing(room_id=room_id, typing=False)
+                except Exception:
+                    pass
 
             # Send response
             self.send_message(room_id, response)
