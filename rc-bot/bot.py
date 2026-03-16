@@ -34,6 +34,7 @@ import requests
 from rocketchat_API.rocketchat import RocketChat
 
 import audit
+import reminders
 
 # Try to load .env file
 try:
@@ -175,6 +176,26 @@ You have access to these tools - use them proactively when relevant:
      - resume: Resume a drained node (requires explicit confirmation)
    - Safety: Mutating actions require `confirm=true`
    - Requires: Node name
+
+8. **set_reminder** - Set a reminder to fire at a specific UTC time
+   - Use when: Users ask to be reminded about something ("remind me to...", "set a reminder for...")
+   - Params: `message` (what to remind), `fire_at` (ISO UTC datetime), `recurrence_minutes` (0 = one-shot, >0 = repeating interval in minutes)
+   - Use the current date/time (shown above in system context) to convert relative times ("in 2 minutes", "tomorrow at 9am", "every Monday at 10am") to absolute UTC
+   - Always confirm the scheduled UTC time back to the user when creating a reminder
+   - fire_at MUST be in the future — reject past times
+   - Examples: "every day at 9am" → recurrence_minutes=1440, "every week" → recurrence_minutes=10080
+
+9. **list_reminders** - List all pending reminders in this room
+   - Use when: Users ask "what reminders are set?" or "show my reminders"
+   - No parameters needed
+
+10. **delete_reminder** - Delete a reminder by ID
+    - Use when: Users ask to cancel or delete a reminder ("delete reminder 3")
+    - Params: `reminder_id` (integer)
+
+11. **snooze_reminder** - Postpone a reminder by N minutes
+    - Use when: Users say "snooze reminder N for X minutes/hours"
+    - Params: `reminder_id` (integer), `snooze_minutes` (integer, must be > 0)
 
 ## Communication Guidelines
 
@@ -1066,6 +1087,82 @@ OLLAMA_TOOLS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_reminder",
+            "description": "Set a reminder that fires at a specific UTC time. Use when users ask to be reminded about something. Convert relative times ('in 2 minutes', 'tomorrow at 9am', 'every Monday') to ISO UTC using the current time from the system prompt. Always confirm the scheduled UTC time back to the user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "What to remind the user about, e.g. 'Check backups'"
+                    },
+                    "fire_at": {
+                        "type": "string",
+                        "description": "ISO 8601 UTC datetime when the reminder should fire, e.g. '2026-03-17T09:00:00Z'. Must be in the future."
+                    },
+                    "recurrence_minutes": {
+                        "type": "integer",
+                        "description": "0 = one-time reminder (default). >0 = repeat every N minutes. Examples: 60=hourly, 1440=daily, 10080=weekly.",
+                        "default": 0
+                    }
+                },
+                "required": ["message", "fire_at"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_reminders",
+            "description": "List all pending reminders in this room. Use when users ask 'what reminders are set?' or 'show my reminders'.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_reminder",
+            "description": "Delete a reminder by ID. Use when users say 'delete reminder N' or 'cancel reminder N'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {
+                        "type": "integer",
+                        "description": "The reminder ID to delete"
+                    }
+                },
+                "required": ["reminder_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "snooze_reminder",
+            "description": "Postpone a reminder by N minutes. Use when users say 'snooze reminder N for X minutes'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "reminder_id": {
+                        "type": "integer",
+                        "description": "The reminder ID to snooze"
+                    },
+                    "snooze_minutes": {
+                        "type": "integer",
+                        "description": "How many minutes to push the reminder forward (must be > 0)"
+                    }
+                },
+                "required": ["reminder_id", "snooze_minutes"]
+            }
+        }
     }
 ]
 
@@ -1081,7 +1178,11 @@ TOOL_FUNCTIONS = {
     "get_slurm_jobs": get_slurm_jobs,
     "get_slurm_job_details": get_slurm_job_details,
     "get_slurm_job_history": get_slurm_job_history,
-    "get_help": get_help
+    "get_help": get_help,
+    "set_reminder":   reminders.set_reminder,
+    "list_reminders": reminders.list_reminders,
+    "delete_reminder": reminders.delete_reminder,
+    "snooze_reminder": reminders.snooze_reminder,
 }
 
 
@@ -1455,6 +1556,25 @@ class RocketChatBot:
                                     )
                                 elif function_name == "get_help":
                                     tool_result = tool_func()
+                                elif function_name == "set_reminder":
+                                    tool_result = tool_func(
+                                        room_id=room_id,
+                                        created_by=user,
+                                        message=function_args.get("message", ""),
+                                        fire_at=function_args.get("fire_at", ""),
+                                        recurrence_minutes=int(function_args.get("recurrence_minutes", 0)),
+                                    )
+                                elif function_name == "list_reminders":
+                                    tool_result = tool_func(room_id=room_id, created_by=user)
+                                elif function_name == "delete_reminder":
+                                    tool_result = tool_func(
+                                        reminder_id=int(function_args.get("reminder_id", 0))
+                                    )
+                                elif function_name == "snooze_reminder":
+                                    tool_result = tool_func(
+                                        reminder_id=int(function_args.get("reminder_id", 0)),
+                                        snooze_minutes=int(function_args.get("snooze_minutes", 0)),
+                                    )
                                 else:
                                     tool_result = {"success": False, "error": f"Unknown tool: {function_name}"}
 
@@ -1486,7 +1606,7 @@ class RocketChatBot:
                                 if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
                                                          "get_infrastructure_summary", "get_slurm_nodes",
                                                          "get_slurm_jobs", "get_slurm_job_details",
-                                                         "get_slurm_job_history"):
+                                                         "get_slurm_job_history", "list_reminders"):
                                     audit.log_action(
                                         room_id=room_id,
                                         user=user,
@@ -1506,7 +1626,7 @@ class RocketChatBot:
                                 if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
                                                          "get_infrastructure_summary", "get_slurm_nodes",
                                                          "get_slurm_jobs", "get_slurm_job_details",
-                                                         "get_slurm_job_history"):
+                                                         "get_slurm_job_history", "list_reminders"):
                                     audit.log_action(
                                         room_id=room_id,
                                         user=user,
@@ -1583,7 +1703,7 @@ class RocketChatBot:
                                 if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
                                                          "get_infrastructure_summary", "get_slurm_nodes",
                                                          "get_slurm_jobs", "get_slurm_job_details",
-                                                         "get_slurm_job_history"):
+                                                         "get_slurm_job_history", "list_reminders"):
                                     audit.log_action(room_id=room_id, user=user, tool_name=function_name,
                                                      args=function_args, success=bool(tool_result.get("success")),
                                                      result_text=str(tool_result.get("data") or tool_result.get("error", "")),
@@ -1843,6 +1963,18 @@ class RocketChatBot:
                 self._on_poll_error(f"DM {room_id}", e)
                 logger.debug(f"Error polling DM {room_id}: {e}")
 
+    def check_reminders(self):
+        """Fire any reminders whose fire_at <= now."""
+        due = reminders.get_due_reminders()
+        for r in due:
+            text = reminders.format_fired_message(r)
+            try:
+                self.send_message(r["room_id"], text)
+                reminders.mark_fired(r["id"], r["recurrence_minutes"])
+            except Exception as e:
+                logger.error(f"Failed to fire reminder id={r['id']}: {e}")
+                # Leave in DB — retry next poll cycle
+
     def shutdown(self):
         """Shutdown bot gracefully, waiting for in-flight work."""
         logger.info("Shutting down bot...")
@@ -1874,6 +2006,7 @@ class RocketChatBot:
                 self.poll_messages()
                 self.refresh_dm_rooms()
                 self.poll_dms()
+                self.check_reminders()
                 reconnect_attempts = 0
 
             except Exception as e:
@@ -1952,6 +2085,7 @@ def main():
     logger.info(f"Ollama concurrency limit: {MAX_OLLAMA_CONCURRENCY}")
 
     audit.init_db()
+    reminders.init_db()
 
     bot = RocketChatBot()
     bot.run()
