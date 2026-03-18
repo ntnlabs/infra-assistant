@@ -317,21 +317,22 @@ def mark_fired(reminder_id: int, recurrence_minutes: int) -> None:
         logger.error(f"mark_fired failed for reminder id={reminder_id}: {e}")
 
 
-def format_fired_message(r: dict) -> str:
+def format_fired_message(r: dict, bot_prefix: str = "") -> str:
     """Build the chat message sent when a reminder fires."""
     user = r["created_by"]
     msg = r["message"]
     rid = r["id"]
     rec = r["recurrence_minutes"]
 
+    header = f"@{user} ⏰ Reminder: **{msg}**"
     if rec == 0:
-        footer = f"_(One-time | ID: {rid} — say \"snooze reminder {rid} for 60 minutes\" or \"delete reminder {rid}\")_"
-    else:
-        recurrence_label = _fmt_recurrence(rec)
-        next_in = _fmt_next_in(rec)
-        footer = (
-            f"_(Recurring: {recurrence_label} | next in {next_in} | ID: {rid} — "
-            f"say \"snooze reminder {rid}...\" or \"delete reminder {rid}\")_"
-        )
+        return header  # reminder already deleted — no action hint
 
-    return f"@{user} ⏰ Reminder: **{msg}**\n{footer}"
+    recurrence_label = _fmt_recurrence(rec)
+    next_in = _fmt_next_in(rec)
+    mention = f"{bot_prefix} " if bot_prefix else ""
+    footer = (
+        f'_(Recurring: {recurrence_label} | next in {next_in} | ID: {rid} — '
+        f'say "{mention}snooze reminder {rid}..." or "{mention}delete reminder {rid}")_'
+    )
+    return f"{header}\n{footer}"

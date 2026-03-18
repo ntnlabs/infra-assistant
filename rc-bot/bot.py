@@ -1967,7 +1967,9 @@ class RocketChatBot:
         """Fire any reminders whose fire_at <= now."""
         due = reminders.get_due_reminders()
         for r in due:
-            text = reminders.format_fired_message(r)
+            is_dm = r["room_id"] in self.dm_room_ids
+            bot_prefix = "" if is_dm else RC_PREFIX
+            text = reminders.format_fired_message(r, bot_prefix=bot_prefix)
             try:
                 self.send_message(r["room_id"], text)
                 reminders.mark_fired(r["id"], r["recurrence_minutes"])
