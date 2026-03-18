@@ -192,10 +192,14 @@ You have access to these tools - use them proactively when relevant:
 10. **delete_reminder** - Delete a reminder by ID
     - Use when: Users ask to cancel or delete a reminder ("delete reminder 3")
     - Params: `reminder_id` (integer)
+    - If the user does not provide a reminder_id, check conversation history for a
+      recently fired reminder. If still unclear, call list_reminders and ask which one.
 
 11. **snooze_reminder** - Postpone a reminder by N minutes
     - Use when: Users say "snooze reminder N for X minutes/hours"
     - Params: `reminder_id` (integer), `snooze_minutes` (integer, must be > 0)
+    - If the user does not provide a reminder_id, check conversation history for a
+      recently fired reminder. If still unclear, call list_reminders and ask which one.
 
 ## Communication Guidelines
 
@@ -1344,10 +1348,10 @@ class RocketChatBot:
         """Extract and clean message text."""
         text = message.get("msg", "")
 
-        # Remove prefix if it's at the start (only for channels, not DMs)
-        # If prefix is in the middle/end (e.g., "hey @bob"), leave it - LLM can handle it
-        if not is_dm and RC_PREFIX and text.lower().startswith(RC_PREFIX.lower()):
-            text = text[len(RC_PREFIX):].strip()
+        # Remove prefix wherever it appears (start, middle, end) so the LLM
+        # only sees the actual request without the bot's name in it.
+        if not is_dm and RC_PREFIX:
+            text = re.sub(re.escape(RC_PREFIX), "", text, flags=re.IGNORECASE).strip()
 
         return text
 
@@ -1397,6 +1401,17 @@ class RocketChatBot:
                 oldest_key = min(conversations.keys(), key=lambda k: conversations[k]["last_activity"])
                 logger.info(f"Evicting oldest conversation: {oldest_key}")
                 del conversations[oldest_key]
+
+    def inject_bot_message(self, room_id: str, user: str, text: str) -> None:
+        """Store a bot-initiated message in conversation history for context."""
+        conv_key = f"{room_id}:{user}"
+        with conversations_lock:
+            if conv_key not in conversations:
+                conversations[conv_key] = {"messages": [], "last_activity": datetime.now(timezone.utc)}
+            conversations[conv_key]["messages"].append({"role": "assistant", "content": text})
+            conversations[conv_key]["last_activity"] = datetime.now(timezone.utc)
+            if len(conversations[conv_key]["messages"]) > 20:
+                conversations[conv_key]["messages"] = conversations[conv_key]["messages"][-20:]
 
     def call_ollama(self, text: str, room_id: str, user: str) -> str:
         """Send message to Ollama and get response with tool support."""
@@ -1567,14 +1582,20 @@ class RocketChatBot:
                                 elif function_name == "list_reminders":
                                     tool_result = tool_func(room_id=room_id, created_by=user)
                                 elif function_name == "delete_reminder":
-                                    tool_result = tool_func(
-                                        reminder_id=int(function_args.get("reminder_id", 0))
-                                    )
+                                    rid = function_args.get("reminder_id")
+                                    if rid is None:
+                                        tool_result = {"success": False, "error": "reminder_id not provided — check conversation history for a recently fired reminder ID, or call list_reminders and ask the user which one to delete"}
+                                    else:
+                                        tool_result = tool_func(reminder_id=int(rid))
                                 elif function_name == "snooze_reminder":
-                                    tool_result = tool_func(
-                                        reminder_id=int(function_args.get("reminder_id", 0)),
-                                        snooze_minutes=int(function_args.get("snooze_minutes", 0)),
-                                    )
+                                    rid = function_args.get("reminder_id")
+                                    if rid is None:
+                                        tool_result = {"success": False, "error": "reminder_id not provided — check conversation history for a recently fired reminder ID, or call list_reminders and ask the user which one to snooze"}
+                                    else:
+                                        tool_result = tool_func(
+                                            reminder_id=int(rid),
+                                            snooze_minutes=int(function_args.get("snooze_minutes", 0)),
+                                        )
                                 else:
                                     tool_result = {"success": False, "error": f"Unknown tool: {function_name}"}
 
@@ -1973,6 +1994,7 @@ class RocketChatBot:
             try:
                 self.send_message(r["room_id"], text)
                 reminders.mark_fired(r["id"], r["recurrence_minutes"])
+                self.inject_bot_message(r["room_id"], r["created_by"], text)
             except Exception as e:
                 logger.error(f"Failed to fire reminder id={r['id']}: {e}")
                 # Leave in DB — retry next poll cycle
