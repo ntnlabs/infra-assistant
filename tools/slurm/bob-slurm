@@ -162,15 +162,21 @@ resume_action() {
 
 queue_action() {
   local user="${1-}"
+  local node="${2-}"
 
+  local -a squeue_cmd
+  squeue_cmd=(squeue -o "%i|%j|%u|%T|%M|%l|%D|%R" -h)
   if [[ -n "$user" ]]; then
     [[ "$user" =~ ^[a-zA-Z0-9_-]+$ ]] || emit_error 2 "Invalid username format"
-    local output
-    output="$(squeue -u "$user" -o "%i|%j|%u|%T|%M|%l|%D|%R" -h 2>/dev/null || true)"
-  else
-    local output
-    output="$(squeue -o "%i|%j|%u|%T|%M|%l|%D|%R" -h 2>/dev/null || true)"
+    squeue_cmd+=(-u "$user")
   fi
+  if [[ -n "$node" ]]; then
+    valid_node "$node" || emit_error 2 "Invalid node format"
+    squeue_cmd+=(-w "$node")
+  fi
+
+  local output
+  output="$("${squeue_cmd[@]}" 2>/dev/null || true)"
 
   [[ -n "$output" ]] || emit_error 4 "No jobs found"
 
@@ -292,7 +298,7 @@ Usage:
   bob-slurm node-status --node NODE
   bob-slurm drain --node NODE --reason REASON
   bob-slurm resume --node NODE
-  bob-slurm queue [--user USERNAME]
+  bob-slurm queue [--user USERNAME] [--node NODE]
   bob-slurm job --jobid JOBID
   bob-slurm history [--user USERNAME] [--state STATE] [--hours HOURS] [--limit LIMIT]
 USAGE
@@ -401,6 +407,7 @@ main() {
     queue)
       require_cmd squeue
       local user=""
+      local node=""
       while [[ $# -gt 0 ]]; do
         case "$1" in
           --user)
@@ -408,13 +415,18 @@ main() {
             [[ $# -gt 0 ]] || emit_error 2 "Missing user value"
             user="$1"
             ;;
+          --node)
+            shift
+            [[ $# -gt 0 ]] || emit_error 2 "Missing node value"
+            node="$1"
+            ;;
           *)
             emit_error 2 "Unknown argument for queue: $1"
             ;;
         esac
         shift || true
       done
-      queue_action "$user"
+      queue_action "$user" "$node"
       ;;
 
     job)

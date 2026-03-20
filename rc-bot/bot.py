@@ -177,6 +177,17 @@ You have access to these tools - use them proactively when relevant:
    - Safety: Mutating actions require `confirm=true`
    - Requires: Node name
 
+7a. **get_slurm_jobs** - List currently queued/running Slurm jobs
+   - Use when: Users ask about active jobs, running jobs, job queue
+   - Optional filters: `user` (username), `node` (hostname — e.g. ci02.tsk.example.com)
+   - **Always pass `node` when the user mentions a specific node**
+
+7b. **get_slurm_job_details** - Get full details for one job by ID
+   - Use when: Users ask about a specific job ID
+
+7c. **get_slurm_job_history** - Get completed/failed job history via sacct
+   - Use when: Users ask about past, finished, or failed jobs
+
 8. **set_reminder** - Set a reminder to fire at a specific UTC time
    - Use when: Users ask to be reminded about something ("remind me to...", "set a reminder for...")
    - Params: `message` (what to remind), `fire_at` (ISO UTC datetime), `recurrence_minutes` (0 = one-shot, >0 = repeating interval in minutes)
@@ -749,8 +760,8 @@ def manage_slurm_node(action: str, node: str, reason: str = "", confirm: bool = 
     return {"success": True, "data": f"Slurm {action_normalized} result for {node_name}:\n```json\n{output}\n```"}
 
 
-def get_slurm_jobs(user: str = "") -> dict:
-    """Get Slurm job queue, optionally filtered by username."""
+def get_slurm_jobs(user: str = "", node: str = "") -> dict:
+    """Get Slurm job queue, optionally filtered by username and/or node."""
     if not SLURM_MASTER_HOST:
         return {"success": False, "error": "SLURM_MASTER_HOST not configured"}
 
@@ -758,9 +769,15 @@ def get_slurm_jobs(user: str = "") -> dict:
     if username and not re.fullmatch(r"[a-zA-Z0-9_-]+", username):
         return {"success": False, "error": "Invalid username format"}
 
+    node_name = (node or "").strip()
+    if node_name and not re.fullmatch(r"[A-Za-z0-9_.:-]+", node_name):
+        return {"success": False, "error": "Invalid node format"}
+
     cmd = f"{SLURM_WRAPPER_COMMAND} queue"
     if username:
         cmd += f" --user {username}"
+    if node_name:
+        cmd += f" --node {node_name}"
 
     proxy_result = _execute_via_ssh_proxy(host=SLURM_MASTER_HOST, command=cmd, timeout=60)
     if not proxy_result.get("success"):
@@ -1019,13 +1036,17 @@ OLLAMA_TOOLS = [
         "type": "function",
         "function": {
             "name": "get_slurm_jobs",
-            "description": "Get Slurm job queue, optionally filtered by username. Use when users ask about running jobs, queued jobs, or job status.",
+            "description": "Get Slurm job queue, optionally filtered by username and/or node. Use when users ask about running jobs, queued jobs, or job status. If a node name is mentioned, always pass it as the node parameter.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "user": {
                         "type": "string",
                         "description": "Optional: Filter jobs by username"
+                    },
+                    "node": {
+                        "type": "string",
+                        "description": "Optional: Filter jobs by node hostname (e.g. ci02.tsk.example.com)"
                     }
                 },
                 "required": []
@@ -1548,7 +1569,8 @@ class RocketChatBot:
                                     )
                                 elif function_name == "get_slurm_jobs":
                                     tool_result = tool_func(
-                                        user=function_args.get("user", "")
+                                        user=function_args.get("user", ""),
+                                        node=function_args.get("node", "")
                                     )
                                 elif function_name == "get_slurm_job_details":
                                     tool_result = tool_func(
