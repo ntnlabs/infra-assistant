@@ -139,6 +139,12 @@ commands:
   - pattern: "^/usr/local/bin/bob-slurm queue --user [a-zA-Z0-9_-]+$"
     description: "Slurm job queue for user (root)"
 
+  - pattern: "^/usr/local/bin/bob-slurm queue --node [a-zA-Z0-9_.:-]+$"
+    description: "Slurm job queue for node (root)"
+
+  - pattern: "^/usr/local/bin/bob-slurm queue --user [a-zA-Z0-9_-]+ --node [a-zA-Z0-9_.:-]+$"
+    description: "Slurm job queue for user and node (root)"
+
   - pattern: "^/usr/local/bin/bob-slurm job --jobid [0-9]+$"
     description: "Slurm job details (root)"
 
