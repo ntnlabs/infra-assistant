@@ -77,7 +77,8 @@ class ZammadClient:
             f"{self.base_url}{path}",
             headers=self.headers,
             params=params or {},
-            timeout=30
+            timeout=30,
+            verify=False
         )
         response.raise_for_status()
         return response.json()
@@ -88,7 +89,8 @@ class ZammadClient:
             f"{self.base_url}{path}",
             headers=self.headers,
             json=data,
-            timeout=30
+            timeout=30,
+            verify=False
         )
         response.raise_for_status()
         return response.json()
@@ -99,7 +101,8 @@ class ZammadClient:
             f"{self.base_url}{path}",
             headers=self.headers,
             json=data,
-            timeout=30
+            timeout=30,
+            verify=False
         )
         response.raise_for_status()
         return response.json()
