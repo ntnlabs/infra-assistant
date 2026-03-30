@@ -66,7 +66,7 @@ ZABBIX_PROXY_URL = os.environ.get("ZABBIX_PROXY_URL", "http://localhost:5002")
 ZABBIX_PROXY_TOKEN = os.environ.get("ZABBIX_PROXY_TOKEN", "")
 
 # Zammad helpdesk (for tools)
-ZAMMAD_PROXY_URL = os.environ.get("ZAMMAD_PROXY_URL", "").rstrip("/")
+ZAMMAD_PROXY_URL = os.environ.get("ZAMMAD_PROXY_URL", "http://localhost:5003").rstrip("/")
 ZAMMAD_PROXY_TOKEN = os.environ.get("ZAMMAD_PROXY_TOKEN", "")
 
 # SSH Proxy (for command execution - independent gatekeeper)
