@@ -182,9 +182,19 @@ def main():
     save_seen_alerts(current_alert_ids)
 
 
+POLL_INTERVAL = int(os.environ.get("ZABBIX_POLL_INTERVAL", "300"))  # seconds
+
+
 if __name__ == "__main__":
     if not ZABBIX_PROXY_TOKEN:
         logger.error("ZABBIX_PROXY_TOKEN not configured")
         sys.exit(1)
 
-    main()
+    import time as _time
+    logger.info(f"Zabbix poller starting — interval={POLL_INTERVAL}s")
+    while True:
+        try:
+            main()
+        except Exception as e:
+            logger.error(f"Unexpected error in poll cycle: {e}")
+        _time.sleep(POLL_INTERVAL)

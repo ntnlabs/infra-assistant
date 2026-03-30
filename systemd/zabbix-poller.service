@@ -1,13 +1,19 @@
 [Unit]
-Description=Zabbix Alert Poller (one-shot)
+Description=Zabbix Alert Poller
 After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=oneshot
+Type=simple
 User=YOUR_USER
 Group=YOUR_USER
 WorkingDirectory=/data/local/infra-assistant/zabbix-poller
 EnvironmentFile=/data/local/infra-assistant/.env
 ExecStart=/data/local/infra-assistant/zabbix-poller/venv/bin/python poller.py
+Restart=always
+RestartSec=10
 StandardOutput=append:/data/local/infra-assistant/logs/zabbix-poller.log
 StandardError=append:/data/local/infra-assistant/logs/zabbix-poller.log
+
+[Install]
+WantedBy=multi-user.target

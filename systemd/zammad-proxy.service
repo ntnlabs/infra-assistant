@@ -1,0 +1,19 @@
+[Unit]
+Description=Zammad Proxy Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+Group=YOUR_USER
+WorkingDirectory=/data/local/infra-assistant/zammad-proxy
+EnvironmentFile=/data/local/infra-assistant/.env
+ExecStart=/data/local/infra-assistant/zammad-proxy/venv/bin/gunicorn --bind 127.0.0.1:5003 --workers 2 --timeout 60 app:app
+Restart=always
+RestartSec=10
+StandardOutput=append:/data/local/infra-assistant/logs/zammad-proxy.log
+StandardError=append:/data/local/infra-assistant/logs/zammad-proxy.log
+
+[Install]
+WantedBy=multi-user.target

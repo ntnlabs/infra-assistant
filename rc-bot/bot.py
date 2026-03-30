@@ -65,6 +65,10 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 ZABBIX_PROXY_URL = os.environ.get("ZABBIX_PROXY_URL", "http://localhost:5002")
 ZABBIX_PROXY_TOKEN = os.environ.get("ZABBIX_PROXY_TOKEN", "")
 
+# Zammad helpdesk (for tools)
+ZAMMAD_PROXY_URL = os.environ.get("ZAMMAD_PROXY_URL", "").rstrip("/")
+ZAMMAD_PROXY_TOKEN = os.environ.get("ZAMMAD_PROXY_TOKEN", "")
+
 # SSH Proxy (for command execution - independent gatekeeper)
 SSH_PROXY_URL = os.environ.get("SSH_PROXY_URL", "http://localhost:5001")
 SSH_PROXY_TOKEN = os.environ.get("SSH_PROXY_TOKEN", "")
@@ -212,6 +216,24 @@ You have access to these tools - use them proactively when relevant:
     - If the user does not provide a reminder_id, check conversation history for a
       recently fired reminder. If still unclear, call list_reminders and ask which one.
 
+12. **get_open_tickets** - List helpdesk tickets from Zammad
+    - Use when: Users ask "what tickets are open?", "show me helpdesk queue", "any new tickets?"
+    - Optional filters: state (open/closed/pending/all), group name, limit
+
+13. **get_ticket_details** - Get full ticket with all messages/articles
+    - Use when: Users ask about a specific ticket by ID or number
+
+14. **search_tickets** - Search tickets by keyword
+    - Use when: Users say "find tickets about X", "search for Y in helpdesk"
+
+15. **update_ticket_state** - Change ticket state (open/closed/pending reminder/etc.)
+    - Use when: Users ask to close, reopen, or change state of a ticket
+    - Requires explicit user intent. Confirm state name before calling.
+    - Valid states: open, closed, new, pending reminder, pending close
+
+16. **add_ticket_note** - Add an internal note to a ticket
+    - Use when: Users ask to add a comment, note, or update to a ticket
+
 ## Communication Guidelines
 
 **Tone and Style:**
@@ -256,6 +278,7 @@ This is your most important rule. ALWAYS follow it:
 - **NEVER output shell commands** like `!squeue -w node` or `squeue ...` — call the appropriate tool instead
 - **NEVER answer questions about Slurm jobs without first calling get_slurm_jobs** - do not invent or guess job data
 - **NEVER call get_slurm_jobs without the `node` parameter when the user specifies a node** — always pass it
+- **NEVER invent ticket IDs, states, or ticket content** — always call a Zammad tool first
 
 ✅ ALWAYS DO THIS INSTEAD:
 - If a tool fails: Say "I cannot access Zabbix right now" or "The command failed"
@@ -693,6 +716,218 @@ def _execute_via_ssh_proxy(host: str, command: str, timeout: int = 60) -> dict:
     except Exception as e:
         logger.error(f"Error calling SSH Proxy: {e}")
         return {"success": False, "error": str(e)}
+
+
+def _call_zammad_proxy(method: str, path: str, **kwargs) -> dict:
+    """Call zammad-proxy. Returns {"success": bool, "data": ..., "error": ...}"""
+    if not ZAMMAD_PROXY_URL:
+        return {"success": False, "error": "ZAMMAD_PROXY_URL not configured"}
+    if not ZAMMAD_PROXY_TOKEN:
+        return {"success": False, "error": "ZAMMAD_PROXY_TOKEN not configured"}
+
+    try:
+        url = f"{ZAMMAD_PROXY_URL}{path}"
+        headers = {"Authorization": f"Bearer {ZAMMAD_PROXY_TOKEN}"}
+        response = requests.request(method, url, headers=headers, timeout=30, **kwargs)
+
+        if response.status_code == 401:
+            return {"success": False, "error": "Zammad proxy authentication failed (check ZAMMAD_PROXY_TOKEN)"}
+        if response.status_code == 404:
+            return {"success": False, "error": f"Not found: {path}"}
+
+        response.raise_for_status()
+        return {"success": True, "data": response.json()}
+
+    except requests.exceptions.ConnectionError:
+        return {"success": False, "error": "Cannot connect to Zammad proxy (is it running on port 5003?)"}
+    except requests.exceptions.Timeout:
+        return {"success": False, "error": "Zammad proxy request timed out"}
+    except Exception as e:
+        logger.error(f"Zammad proxy error: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def get_open_tickets(state: str = "open", group: str = "", limit: int = 25) -> dict:
+    """Get helpdesk tickets from Zammad.
+
+    Args:
+        state: Ticket state filter — open (default), closed, pending, all
+        group: Optional group name filter
+        limit: Max number of tickets to return
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    params = {"state": state, "limit": limit}
+    if group:
+        params["group"] = group
+
+    result = _call_zammad_proxy("GET", "/tickets", params=params)
+    if not result["success"]:
+        return result
+
+    data = result["data"]
+    tickets = data.get("tickets", [])
+
+    if not tickets:
+        return {"success": True, "data": f"No {state} tickets found."}
+
+    lines = [f"Found {len(tickets)} {state} ticket(s):\n"]
+    for t in tickets:
+        number = t.get("number") or t.get("id", "?")
+        title = t.get("title", "No title")
+        ticket_state = t.get("state", "?")
+        owner = t.get("owner") or "unassigned"
+        age_minutes = t.get("age_minutes")
+        age_str = ""
+        if age_minutes is not None:
+            if age_minutes < 60:
+                age_str = f" ({age_minutes}m old)"
+            else:
+                hours = age_minutes // 60
+                mins = age_minutes % 60
+                age_str = f" ({hours}h {mins:02d}m old)" if mins else f" ({hours}h old)"
+        lines.append(f"#{number} [{ticket_state}] {title} — owner: {owner}{age_str}")
+
+    return {"success": True, "data": "\n".join(lines)}
+
+
+def get_ticket_details(ticket_id: int) -> dict:
+    """Get full details for a single ticket including all articles.
+
+    Args:
+        ticket_id: Zammad ticket ID
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    result = _call_zammad_proxy("GET", f"/tickets/{ticket_id}")
+    if not result["success"]:
+        return result
+
+    t = result["data"]
+    number = t.get("number") or t.get("id", "?")
+    title = t.get("title", "No title")
+    ticket_state = t.get("state", "?")
+    owner = t.get("owner") or "unassigned"
+    group = t.get("group", "?")
+    created_at = t.get("created_at", "?")
+    age_minutes = t.get("age_minutes")
+
+    age_str = ""
+    if age_minutes is not None:
+        hours = age_minutes // 60
+        mins = age_minutes % 60
+        age_str = f" ({hours}h {mins:02d}m old)" if hours else f" ({mins}m old)"
+
+    lines = [
+        f"Ticket #{number}: {title}",
+        f"State: {ticket_state} | Group: {group} | Owner: {owner}",
+        f"Created: {created_at}{age_str}",
+        "",
+    ]
+
+    articles = t.get("articles", [])
+    if articles:
+        lines.append(f"--- {len(articles)} article(s) ---")
+        for i, a in enumerate(articles, 1):
+            sender = a.get("from") or a.get("created_by", "?")
+            internal = " [internal]" if a.get("internal") else ""
+            created = a.get("created_at", "")[:19] if a.get("created_at") else ""
+            body = (a.get("body") or "").strip()
+            # Trim very long bodies
+            if len(body) > 500:
+                body = body[:500] + "…"
+            lines.append(f"\n[{i}] {sender}{internal} @ {created}")
+            lines.append(body)
+    else:
+        lines.append("No articles.")
+
+    return {"success": True, "data": "\n".join(lines)}
+
+
+def search_tickets(query: str) -> dict:
+    """Search tickets by keyword.
+
+    Args:
+        query: Search string
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    if not query or not query.strip():
+        return {"success": False, "error": "query is required"}
+
+    result = _call_zammad_proxy("GET", "/tickets/search", params={"q": query.strip()})
+    if not result["success"]:
+        return result
+
+    data = result["data"]
+    tickets = data.get("tickets", [])
+
+    if not tickets:
+        return {"success": True, "data": f"No tickets found matching '{query}'."}
+
+    lines = [f"Found {len(tickets)} ticket(s) matching '{query}':\n"]
+    for t in tickets:
+        number = t.get("number") or t.get("id", "?")
+        title = t.get("title", "No title")
+        ticket_state = t.get("state", "?")
+        owner = t.get("owner") or "unassigned"
+        lines.append(f"#{number} [{ticket_state}] {title} — owner: {owner}")
+
+    return {"success": True, "data": "\n".join(lines)}
+
+
+def update_ticket_state(ticket_id: int, state: str) -> dict:
+    """Update the state of a Zammad ticket.
+
+    Args:
+        ticket_id: Zammad ticket ID
+        state: New state — open, closed, new, pending reminder, pending close
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    valid_states = {"open", "closed", "new", "pending reminder", "pending close"}
+    state = (state or "").strip().lower()
+    if state not in valid_states:
+        return {"success": False, "error": f"Invalid state '{state}'. Valid: {', '.join(sorted(valid_states))}"}
+
+    if not isinstance(ticket_id, int) or ticket_id <= 0:
+        return {"success": False, "error": "ticket_id must be a positive integer"}
+
+    result = _call_zammad_proxy("PATCH", f"/tickets/{ticket_id}/state", json={"state": state})
+    if not result["success"]:
+        return result
+
+    data = result["data"]
+    return {"success": True, "data": data.get("message", f"Ticket {ticket_id} state updated to '{state}'")}
+
+
+def add_ticket_note(ticket_id: int, body: str) -> dict:
+    """Add an internal note to a Zammad ticket.
+
+    Args:
+        ticket_id: Zammad ticket ID
+        body: Note text
+
+    Returns:
+        dict with 'success' and 'data' or 'error'
+    """
+    body = (body or "").strip()
+    if not body:
+        return {"success": False, "error": "body (note text) is required"}
+
+    if not isinstance(ticket_id, int) or ticket_id <= 0:
+        return {"success": False, "error": "ticket_id must be a positive integer"}
+
+    result = _call_zammad_proxy("POST", f"/tickets/{ticket_id}/note", json={"body": body})
+    if not result["success"]:
+        return result
+
+    data = result["data"]
+    return {"success": True, "data": data.get("message", f"Note added to ticket {ticket_id}")}
 
 
 def get_slurm_nodes(partition: str = "") -> dict:
@@ -1191,6 +1426,111 @@ OLLAMA_TOOLS = [
                 "required": ["reminder_id", "snooze_minutes"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_open_tickets",
+            "description": "List helpdesk tickets from Zammad. Use when users ask 'what tickets are open?', 'show helpdesk queue', 'any new tickets?', 'unassigned tickets?'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "description": "Ticket state filter: open (default), closed, pending, all",
+                        "enum": ["open", "closed", "pending", "all"],
+                        "default": "open"
+                    },
+                    "group": {
+                        "type": "string",
+                        "description": "Optional: filter by group name"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of tickets to return (default 25)",
+                        "default": 25
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_ticket_details",
+            "description": "Get full details for a helpdesk ticket including all messages/articles. Use when users ask about a specific ticket by ID or number.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticket_id": {
+                        "type": "integer",
+                        "description": "Zammad ticket ID (numeric)"
+                    }
+                },
+                "required": ["ticket_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_tickets",
+            "description": "Search helpdesk tickets by keyword. Use when users say 'find tickets about X', 'search for Y in helpdesk'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query string"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_ticket_state",
+            "description": "Update the state of a helpdesk ticket. Use when users ask to close, reopen, or change status of a ticket. Requires explicit user intent.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticket_id": {
+                        "type": "integer",
+                        "description": "Zammad ticket ID"
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "New ticket state",
+                        "enum": ["open", "closed", "new", "pending reminder", "pending close"]
+                    }
+                },
+                "required": ["ticket_id", "state"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_ticket_note",
+            "description": "Add an internal note to a helpdesk ticket. Use when users ask to add a comment or note to a ticket.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticket_id": {
+                        "type": "integer",
+                        "description": "Zammad ticket ID"
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "Note text to add"
+                    }
+                },
+                "required": ["ticket_id", "body"]
+            }
+        }
     }
 ]
 
@@ -1211,6 +1551,11 @@ TOOL_FUNCTIONS = {
     "list_reminders": reminders.list_reminders,
     "delete_reminder": reminders.delete_reminder,
     "snooze_reminder": reminders.snooze_reminder,
+    "get_open_tickets": get_open_tickets,
+    "get_ticket_details": get_ticket_details,
+    "search_tickets": search_tickets,
+    "update_ticket_state": update_ticket_state,
+    "add_ticket_note": add_ticket_note,
 }
 
 
@@ -1621,6 +1966,42 @@ class RocketChatBot:
                                             reminder_id=int(rid),
                                             snooze_minutes=int(function_args.get("snooze_minutes", 0)),
                                         )
+                                elif function_name == "get_open_tickets":
+                                    tool_result = tool_func(
+                                        state=function_args.get("state", "open"),
+                                        group=function_args.get("group", ""),
+                                        limit=int(function_args.get("limit", 25)),
+                                    )
+                                elif function_name == "get_ticket_details":
+                                    tid = function_args.get("ticket_id")
+                                    if tid is None:
+                                        tool_result = {"success": False, "error": "ticket_id is required"}
+                                    else:
+                                        tool_result = tool_func(ticket_id=int(tid))
+                                elif function_name == "search_tickets":
+                                    q = function_args.get("query", "")
+                                    if not q:
+                                        tool_result = {"success": False, "error": "query is required"}
+                                    else:
+                                        tool_result = tool_func(query=q)
+                                elif function_name == "update_ticket_state":
+                                    tid = function_args.get("ticket_id")
+                                    state = function_args.get("state", "")
+                                    if tid is None:
+                                        tool_result = {"success": False, "error": "ticket_id is required"}
+                                    elif not state:
+                                        tool_result = {"success": False, "error": "state is required"}
+                                    else:
+                                        tool_result = tool_func(ticket_id=int(tid), state=state)
+                                elif function_name == "add_ticket_note":
+                                    tid = function_args.get("ticket_id")
+                                    body = function_args.get("body", "")
+                                    if tid is None:
+                                        tool_result = {"success": False, "error": "ticket_id is required"}
+                                    elif not body:
+                                        tool_result = {"success": False, "error": "body is required"}
+                                    else:
+                                        tool_result = tool_func(ticket_id=int(tid), body=body)
                                 else:
                                     tool_result = {"success": False, "error": f"Unknown tool: {function_name}"}
 
@@ -1652,7 +2033,8 @@ class RocketChatBot:
                                 if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
                                                          "get_infrastructure_summary", "get_slurm_nodes",
                                                          "get_slurm_jobs", "get_slurm_job_details",
-                                                         "get_slurm_job_history", "list_reminders"):
+                                                         "get_slurm_job_history", "list_reminders",
+                                                         "get_open_tickets", "get_ticket_details", "search_tickets"):
                                     audit.log_action(
                                         room_id=room_id,
                                         user=user,
@@ -1672,7 +2054,8 @@ class RocketChatBot:
                                 if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
                                                          "get_infrastructure_summary", "get_slurm_nodes",
                                                          "get_slurm_jobs", "get_slurm_job_details",
-                                                         "get_slurm_job_history", "list_reminders"):
+                                                         "get_slurm_job_history", "list_reminders",
+                                                         "get_open_tickets", "get_ticket_details", "search_tickets"):
                                     audit.log_action(
                                         room_id=room_id,
                                         user=user,
@@ -1749,7 +2132,8 @@ class RocketChatBot:
                                 if function_name not in ("query_audit_log", "get_help", "get_active_alerts",
                                                          "get_infrastructure_summary", "get_slurm_nodes",
                                                          "get_slurm_jobs", "get_slurm_job_details",
-                                                         "get_slurm_job_history", "list_reminders"):
+                                                         "get_slurm_job_history", "list_reminders",
+                                                         "get_open_tickets", "get_ticket_details", "search_tickets"):
                                     audit.log_action(room_id=room_id, user=user, tool_name=function_name,
                                                      args=function_args, success=bool(tool_result.get("success")),
                                                      result_text=str(tool_result.get("data") or tool_result.get("error", "")),
