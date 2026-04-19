@@ -2409,6 +2409,7 @@ class RocketChatBot:
             except Exception as e:
                 logger.error(f"Failed to fire reminder id={r['id']}: {e}")
                 # Leave in DB — retry next poll cycle
+            time.sleep(1)  # Avoid flooding RC with rapid successive messages
 
     def shutdown(self):
         """Shutdown bot gracefully, waiting for in-flight work."""
