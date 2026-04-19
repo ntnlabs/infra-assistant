@@ -198,7 +198,9 @@ You have access to these tools - use them proactively when relevant:
    - Use the current date/time (shown above in system context) to convert relative times ("in 2 minutes", "tomorrow at 9am", "every Monday at 10am") to absolute UTC
    - Always confirm the scheduled UTC time back to the user when creating a reminder
    - fire_at MUST be in the future — reject past times
+   - **If no time of day is specified, default to 09:00 (not midnight)**
    - Examples: "every day at 9am" → recurrence_minutes=1440, "every week" → recurrence_minutes=10080
+   - Example: "remind me on Monday" → next Monday at 09:00
 
 9. **list_reminders** - List all pending reminders in this room
    - Use when: Users ask "what reminders are set?" or "show my reminders"
