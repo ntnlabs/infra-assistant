@@ -1811,8 +1811,11 @@ class RocketChatBot:
         now_utc = datetime.now(timezone.utc)
         now_local = _get_local_now()
         tz_label = BOT_TIMEZONE if BOT_TIMEZONE != "UTC" else "UTC"
+        # Include explicit UTC offset so LLM can convert local → UTC correctly
+        utc_offset = now_local.strftime("%z")  # e.g. +0200
+        utc_offset_str = f"UTC{utc_offset[:3]}:{utc_offset[3:]}" if utc_offset else "UTC"
         now_str = (
-            f"Current date and time: {now_local.strftime('%Y-%m-%d %H:%M:%S')} {tz_label}"
+            f"Current date and time: {now_local.strftime('%Y-%m-%d %H:%M:%S')} {tz_label} ({utc_offset_str})"
             f" (= {now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC)"
         )
         messages = [{"role": "system", "content": f"{now_str}\n\n{SYSTEM_PROMPT}"}]
