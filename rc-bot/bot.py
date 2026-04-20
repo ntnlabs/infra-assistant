@@ -78,6 +78,9 @@ SLURM_MASTER_HOST = os.environ.get("SLURM_MASTER_HOST", "").strip()
 SLURM_WRAPPER_COMMAND = os.environ.get("SLURM_WRAPPER_COMMAND", "/usr/local/bin/bob-slurm").strip() or "/usr/local/bin/bob-slurm"
 SLURM_DEFAULT_PARTITION = os.environ.get("SLURM_DEFAULT_PARTITION", "").strip()
 
+# Timezone
+BOT_TIMEZONE = os.environ.get("BOT_TIMEZONE", "UTC")
+
 # Settings
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "2"))
 CONVERSATION_TIMEOUT = int(os.environ.get("CONVERSATION_TIMEOUT", "3600"))
@@ -101,6 +104,18 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+# =============================================================================
+# Timezone Helper
+# =============================================================================
+
+def _get_local_now() -> "datetime":
+    """Return current time in BOT_TIMEZONE (falls back to UTC on error)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo(BOT_TIMEZONE))
+    except Exception:
+        return datetime.now(timezone.utc)
 
 # =============================================================================
 # State
@@ -195,12 +210,13 @@ You have access to these tools - use them proactively when relevant:
 8. **set_reminder** - Set a reminder to fire at a specific UTC time
    - Use when: Users ask to be reminded about something ("remind me to...", "set a reminder for...")
    - Params: `message` (what to remind), `fire_at` (ISO UTC datetime), `recurrence_minutes` (0 = one-shot, >0 = repeating interval in minutes)
-   - Use the current date/time (shown above in system context) to convert relative times ("in 2 minutes", "tomorrow at 9am", "every Monday at 10am") to absolute UTC
-   - Always confirm the scheduled UTC time back to the user when creating a reminder
+   - Users speak in LOCAL time (shown in system context). Convert to UTC before calling set_reminder.
+     Example: user says "9am", local is UTC+2 → fire_at = 07:00 UTC
+   - **If no time of day is specified, default to 09:00 LOCAL time**
+   - Always confirm the scheduled LOCAL time back to the user (not UTC)
    - fire_at MUST be in the future — reject past times
-   - **If no time of day is specified, default to 09:00 (not midnight)**
    - Examples: "every day at 9am" → recurrence_minutes=1440, "every week" → recurrence_minutes=10080
-   - Example: "remind me on Monday" → next Monday at 09:00
+   - Example: "remind me on Monday" → next Monday at 09:00 local time, converted to UTC
 
 9. **list_reminders** - List all pending reminders in this room
    - Use when: Users ask "what reminders are set?" or "show my reminders"
@@ -1792,8 +1808,14 @@ class RocketChatBot:
         history = self.get_conversation_history(room_id, user)
 
         # Build messages array
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        messages = [{"role": "system", "content": f"Current date and time: {now_str}\n\n{SYSTEM_PROMPT}"}]
+        now_utc = datetime.now(timezone.utc)
+        now_local = _get_local_now()
+        tz_label = BOT_TIMEZONE if BOT_TIMEZONE != "UTC" else "UTC"
+        now_str = (
+            f"Current date and time: {now_local.strftime('%Y-%m-%d %H:%M:%S')} {tz_label}"
+            f" (= {now_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC)"
+        )
+        messages = [{"role": "system", "content": f"{now_str}\n\n{SYSTEM_PROMPT}"}]
         messages.extend(history)
         messages.append({"role": "user", "content": text})
 
