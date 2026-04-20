@@ -2425,7 +2425,10 @@ class RocketChatBot:
             bot_prefix = "" if is_dm else RC_PREFIX
             text = reminders.format_fired_message(r, bot_prefix=bot_prefix)
             try:
-                self.send_message(r["room_id"], text)
+                # Send directly so failures raise and mark_fired is NOT called on error
+                result = self.rc.chat_post_message(text, room_id=r["room_id"])
+                if not result.ok:
+                    raise Exception(f"RC rejected message: {result.json()}")
                 reminders.mark_fired(r["id"], r["recurrence_minutes"])
                 self.inject_bot_message(r["room_id"], r["created_by"], text)
             except Exception as e:
